@@ -1,0 +1,17 @@
+{
+  "name": "stagehand-repl-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for browser automation via Stagehand, running in-process with a persistent browser session.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "stagehand-repl-mcp": "./stagehand-mcp.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@browserbasehq/stagehand": "^3.0.3",
+    "@ai-sdk/anthropic": "^2.0.64",
+    "patchright": "*",
+    "zod": "^3.25.0"
+  }
+}
