@@ -37,7 +37,9 @@ export function configure({ baseProfile, stateDir, proxy, callLimitMs, idleMs })
   }
   setInterval(() => {
     for (const b of [...table.values()]) {
-      if (b.busy === 0 && Date.now() - b.lastUsed > config.idleMs) close(b.handle, "idle").catch(() => {});
+      if (b.busy === 0 && Date.now() - b.lastUsed > config.idleMs) {
+        close(b.handle, "idle").catch((error) => process.stderr.write(`browser-mcp: closing idle ${b.handle} failed: ${error.message}\n`));
+      }
     }
   }, Math.min(config.idleMs / 2, 60_000)).unref();
 }
@@ -183,6 +185,9 @@ export async function close(handle, reason) {
   const b = get(handle);
   table.delete(handle);
   b.closed = true;
+  // A launch in flight ends its own Chrome once it sees `closed`; the clone is deleted only after, so Chrome
+  // does not write a fresh profile into a deleted directory.
+  await Promise.allSettled([b.starting]);
   try {
     await b.context?.close();
   } catch {}
