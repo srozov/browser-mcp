@@ -1,100 +1,71 @@
-# stagehand-repl-mcp
+# browser-mcp
 
-An MCP server that gives an LLM agent (Claude Code, Claude Desktop, or any MCP client) a persistent, scriptable browser via [Stagehand](https://github.com/browserbase/stagehand).
+A local browser service for agents. One daemon on `127.0.0.1` speaks MCP over Streamable HTTP and keeps a real,
+headed Chrome (patchright, on its own Xvfb display) for every caller. A caller calls `start`, gets a handle, and
+passes it to every other call, so concurrent agents never see, lose or wait for each other's pages.
 
-Instead of exposing one MCP tool per browser action (`click`, `type`, `goto`, ...), it exposes a single `stagehand_eval` tool that runs arbitrary JavaScript against a live Stagehand + Playwright session. The agent writes short async code snippets — `await page.goto(...)`, `await stagehand.act(...)`, `await stagehand.extract(...)` — and gets structured JSON back. The browser stays open between calls, so cookies, logins, and page state persist for the whole session.
+**Not for use yet:** until the source policy lands, browsers can reach local hosts.
 
-No child process, no socket, no polling — Stagehand runs directly inside the MCP server process, and the browser launches lazily on the first tool call.
+## Prerequisites
 
-## Why
-
-Browser-automation MCP servers usually wrap Playwright/Puppeteer 1:1 into dozens of tools (`browser_click`, `browser_type`, `browser_screenshot`, ...). That's a lot of round trips for anything beyond a single action, and it pushes all the sequencing logic onto the client. This server instead gives the agent a REPL: it can chain steps, branch on results, and use Stagehand's AI-driven `act`/`extract`/`observe` primitives inline, in one call.
-
-## How it works
-
-- **[patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright)** launches a persistent, stealth-patched Chromium/Chrome profile and exposes it over CDP.
-- **[Stagehand](https://github.com/browserbase/stagehand)** connects to that browser via `cdpUrl` and provides the AI-driven `act` / `extract` / `observe` / `agent` primitives on top of plain Playwright.
-- Stagehand's LLM calls go through the [Vercel AI SDK](https://sdk.vercel.ai/)'s Anthropic provider, pointed at any Anthropic-compatible endpoint (this was built against [MiniMax](https://www.minimax.io/)'s Anthropic-compatible API, but any compatible provider works by changing `MODEL_BASE_URL`/`MODEL_NAME`).
-- A small `Proxy` patches tool-call arguments in the model's responses on the fly — a workaround for providers that return `arguments` as a raw string instead of a JSON array, which trips up Stagehand's tool-calling loop.
-- Submitted code runs as the body of a generated `async function`, with `stagehand`, `page`, `context`, `z` (Zod), and `screenshot()` in scope — an ad hoc REPL without an actual REPL process.
+Node 24, Google Chrome and Xvfb.
 
 ## Install
 
-```bash
-git clone https://github.com/<you>/stagehand-repl-mcp.git
-cd stagehand-repl-mcp
-npm install
+```
+npm ci
 ```
 
 ## Configure
 
-Point your MCP client (e.g. Claude Code's `mcpServers` config) at the script:
+The daemon reads its environment and refuses to start without the three variables.
+
+| Variable | Meaning |
+|---|---|
+| `BROWSER_PORT` | TCP port on 127.0.0.1 |
+| `BROWSER_BASE_PROFILE` | an existing directory: the template profile every browser starts from (a copy) |
+| `BROWSER_STATE_DIR` | the daemon's directory: `profiles/<handle>/` (copies) and `logs/<handle>.jsonl` (audit log) |
+
+`BROWSER_TEST_*` variables exist for the tests only.
+
+### The base profile
+
+Run `google-chrome --user-data-dir=<dir>` on the desktop, set the profile up, quit Chrome, and point
+`BROWSER_BASE_PROFILE` at `<dir>`. Each `start` copies it; the copy is deleted when its browser ends.
+
+## Run as a service
+
+Copy `deploy/browser-mcp.service` to `~/.config/systemd/user/`, edit its `ExecStart` path, write the three
+variables to `~/.config/browser-mcp/env`, then:
+
+```
+systemctl --user enable --now browser-mcp
+```
+
+The unit's `KillMode=control-group` kills a crashed daemon's Chrome and Xvfb; a restarted daemon deletes the
+copies it left.
+
+## Use
+
+A client's MCP config:
 
 ```json
-{
-  "mcpServers": {
-    "stagehand-repl": {
-      "command": "node",
-      "args": ["/path/to/stagehand-repl-mcp/stagehand-mcp.mjs"],
-      "env": {
-        "MINIMAX_API_KEY": "sk-..."
-      }
-    }
-  }
-}
+{"mcpServers": {"browser": {"type": "http", "url": "http://127.0.0.1:<port>/mcp"}}}
 ```
 
-### Environment variables
+Tools:
 
-| Variable | Default | Description |
-|---|---|---|
-| `MINIMAX_API_KEY` | *(required)* | API key for the Anthropic-compatible LLM endpoint |
-| `MODEL_NAME` | `MiniMax-M2.1` | Model name passed to the provider |
-| `MODEL_BASE_URL` | `https://api.minimax.io/anthropic/v1` | Base URL of the Anthropic-compatible API |
-| `HEADLESS` | `false` | Set to `1`/`true` to run the browser headless |
-| `CDP_PORT` | `9222` | Local CDP debugging port |
-| `BROWSER_PROFILE` | `~/.stagehand-repl-mcp/browser-profile` | Persistent Chrome profile directory (cookies, logins) |
+- `start {}`: a browser of your own; returns `{browser}`. At most 4 run at once; at the cap it fails at once.
+  Chrome launches on the first `browse`.
+- `browse {browser, action, ...}`: `open {url}` opens a web page; `text {page?}` reads its visible text in pages
+  of 6000 characters. Documents (PDF, spreadsheets) are refused. A call over its 120 s limit fails and restarts
+  that browser, which keeps its cookies.
+- `close {browser}`: ends the browser and deletes its profile copy.
 
-## Tools
+A browser also ends after 10 idle minutes and when the daemon stops. An unknown handle fails with a message
+saying so.
 
-### `stagehand_eval`
+## Test
 
-Executes JavaScript as an async function body, with these globals in scope:
-
-- `stagehand` — the Stagehand instance (`act`, `extract`, `observe`, `agent`)
-- `page` — the Playwright `Page` (`goto`, `click`, `fill`, `content`, `url`, ...)
-- `context` — the Playwright `BrowserContext` (`pages`, `newPage`, `cookies`)
-- `z` — Zod, for building extraction schemas
-- `screenshot(path?)` — saves a full-page screenshot, returns the path
-
-```js
-// Navigate and read the URL
-await page.goto('https://example.com')
-return await page.url()
-
-// AI-driven interaction
-await stagehand.act('Click the login button')
-
-// AI-driven structured extraction
-const data = await stagehand.extract(
-  'Get the page title',
-  z.object({ title: z.string() })
-)
-return data
-```
-
-### `stagehand_screenshot`
-
-Takes a full-page screenshot and returns it as an inline image.
-
-### `stagehand_close`
-
-Closes the browser and resets the session. The browser relaunches lazily on the next `stagehand_eval` / `stagehand_screenshot` call.
-
-## Status
-
-This was built as a personal tool and isn't under active development — it's shared as-is for reference. Issues and PRs may not get fast turnaround.
-
-## License
-
-MIT — see [LICENSE](./LICENSE).
+`scripts/verify` installs from the lock file, checks every module parses and runs the tests, which use a local
+fixture site as the browsers' proxy.
