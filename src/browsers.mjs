@@ -183,7 +183,8 @@ export function limited(name, fn, onTimeout, limit = config.callLimitMs) {
       err(new CallTimeout(`${name} ran over its ${limit / 1000} s limit and was stopped`));
     }, limit);
   });
-  return Promise.race([fn(), over]).finally(() => clearTimeout(timer));
+  // A throw from fn itself becomes a rejection: otherwise the timer would outlive the call and reject unhandled.
+  return Promise.race([new Promise((ok) => ok(fn())), over]).finally(() => clearTimeout(timer));
 }
 
 /** Delete the handle at once, so later calls get "unknown browser"; then end its Chrome and Xvfb and delete its clone. */
