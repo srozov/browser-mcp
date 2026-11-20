@@ -1,10 +1,12 @@
 // End-to-end tests of the browser daemon over Streamable HTTP MCP, with a local forward proxy that plays the
-// internet (an issuer site, a shared document CDN, third parties). Network-free; needs Chrome and Xvfb.
+// internet (an issuer site, a shared document CDN, third parties), and a local recorder that plays the search
+// services. Network-free; needs Chrome and Xvfb.
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { request } from "node:http";
+import { createServer as createHttpServer, request } from "node:http";
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -17,7 +19,12 @@ const DAEMON = resolve(import.meta.dirname, "../src/daemon.mjs");
 const LIMIT_MS = 20_000;
 const ISSUER = "http://ir.issuer.test";
 
+const KEY = "test-key-" + randomBytes(8).toString("hex");
+const NEWS_XML = readFileSync(join(import.meta.dirname, "fixtures/news/google-news-search.xml"), "utf8");
+const DECODED = "https://www.wsj.com/tech/example-widgets-regulator-probe";
+
 let site;
+let recorder;
 let hits;
 let root;
 let main;
@@ -37,20 +44,53 @@ async function daemon(env = {}, stateDir = mkdtempSync(join(root, "state-"))) {
   const port = await freePort();
   const proc = spawn(process.execPath, [DAEMON], { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env,
     BROWSER_PORT: String(port), BROWSER_BASE_PROFILE: join(root, "base"), BROWSER_STATE_DIR: stateDir,
-    BROWSER_TEST_PROXY: site.url, BROWSER_TEST_CALL_LIMIT_MS: String(LIMIT_MS), ...env } });
-  const d = { proc, port, stateDir, url: `http://127.0.0.1:${port}/mcp`,
+    BROWSER_MINIMAX_KEY: KEY, BROWSER_TEST_SEARCH_ORIGIN: recorder.url, BROWSER_TEST_PROXY: site.url, BROWSER_TEST_CALL_LIMIT_MS: String(LIMIT_MS), ...env } });
+  const d = { proc, port, stateDir, url: `http://127.0.0.1:${port}/mcp`, stderr: "",
     exited: new Promise((ok) => proc.once("exit", ok)) };
   daemons.push(d);
   await new Promise((ok, err) => {
-    let out = "";
     proc.stderr.on("data", (chunk) => {
-      out += chunk;
+      d.stderr += chunk;
       process.stderr.write(chunk);
-      if (out.includes("listening on")) ok();
+      if (d.stderr.includes("listening on")) ok();
     });
-    d.exited.then((code) => err(new Error(`daemon exited with ${code}: ${out}`)));
+    d.exited.then((code) => err(new Error(`daemon exited with ${code}: ${d.stderr}`)));
   });
   return d;
+}
+
+/** A local recorder that plays MiniMax's search API and Google News, and records every request it gets. */
+async function startRecorder() {
+  const seen = [];
+  const server = createHttpServer((req, res) => {
+    let body = "";
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      const entry = { method: req.method, url: req.url, headers: req.headers, body, aborted: false };
+      seen.push(entry);
+      const json = (status, value) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(value));
+      if (req.method === "POST" && req.url === "/v1/coding_plan/search") {
+        const q = JSON.parse(body).q;
+        if (q === "hang") return void res.on("close", () => { entry.aborted = !res.writableEnded; });
+        if (q === "fail") return json(503, {});
+        if (q === "denied") return json(401, {});
+        if (q === "quota") return json(200, { base_resp: { status_code: 1008, status_msg: "insufficient balance" } });
+        return json(200, { organic: [{ title: "Result for " + q, link: `${ISSUER}/reports`, snippet: "Annual reports", date: "2026-03-03" }],
+          base_resp: { status_code: 0 } });
+      }
+      if (req.url.startsWith("/rss/search")) return void res.writeHead(200, { "content-type": "application/xml" }).end(NEWS_XML);
+      if (req.url.startsWith("/rss/articles/")) {
+        return void res.writeHead(200, { "content-type": "text/html" }).end(`<div data-n-a-sg="sig" data-n-a-ts="1763400000"></div>`);
+      }
+      if (req.method === "POST" && req.url === "/_/DotsSplashUi/data/batchexecute") {
+        const answer = [["wrb.fr", "Fbv4je", JSON.stringify(["garturlres", DECODED, 1]), null, null, null, "0"]];
+        return void res.writeHead(200).end(`)]}'\n\n${JSON.stringify(answer)}`);
+      }
+      res.writeHead(404).end();
+    });
+  });
+  await new Promise((ok) => server.listen(0, "127.0.0.1", ok));
+  return { server, seen, url: `http://127.0.0.1:${server.address().port}` };
 }
 
 async function client(url) {
@@ -103,6 +143,7 @@ const overlap = (rs) => Math.max(...rs.map((r) => r.t0)) < Math.min(...rs.map((r
 
 before(async () => {
   site = await startFixtureSite();
+  recorder = await startRecorder();
   hits = site.hits;
   root = mkdtempSync(join(tmpdir(), "browser-mcp-"));
   mkdirSync(join(root, "base"));
@@ -114,6 +155,7 @@ after(async () => {
   for (const d of daemons) d.proc.kill("SIGTERM");
   await Promise.all(daemons.map((d) => d.exited));
   site?.server.close();
+  recorder?.server.close();
   if (root) rmSync(root, { recursive: true, force: true });
 });
 
@@ -315,4 +357,123 @@ test("a daemon started after a killed one deletes its leftover profile copies an
   assert.deepEqual(readdirSync(join(d.stateDir, "profiles")), []);
   assert.equal(existsSync(old), false);
   assert.ok(existsSync(join(d.stateDir, "logs", `${b}.jsonl`)), "a recent log stays");
+});
+
+// Searches need no browser: every test below runs on a daemon of its own and launches no Chrome.
+const searchReplies = [];
+const searchDaemons = [];
+async function searcher() {
+  const d = await daemon();
+  searchDaemons.push(d);
+  return { d, c: await client(d.url) };
+}
+async function searched(c, name, args) {
+  const r = await call(c, name, args);
+  searchReplies.push(r.text);
+  return r;
+}
+
+test("search returns the engine's results as title, url, snippet and date", async () => {
+  const { c } = await searcher();
+  const before = recorder.seen.length;
+  const r = await searched(c, "search", { query: "Example Widgets annual report 2025" });
+  assert.equal(r.error, false, r.text);
+  assert.deepEqual(JSON.parse(r.text), [{ title: "Result for Example Widgets annual report 2025",
+    url: `${ISSUER}/reports`, snippet: "Annual reports", date: "2026-03-03" }]);
+  const seen = recorder.seen.slice(before).find((e) => e.url === "/v1/coding_plan/search");
+  assert.equal(seen.headers.authorization, `Bearer ${KEY}`);
+  assert.deepEqual(JSON.parse(seen.body), { q: "Example Widgets annual report 2025" });
+});
+
+test("news_search returns the range's decoded headlines without a browser", async () => {
+  const { c } = await searcher();
+  const before = recorder.seen.length;
+  const r = await searched(c, "news_search", { query: "Example Widgets AG", from: "2026-11-13", to: "2026-11-18" });
+  assert.equal(r.error, false, r.text);
+  const out = JSON.parse(r.text);
+  assert.deepEqual(out.items.map((i) => [i.outlet, i.site, i.published.slice(0, 10)]),
+    [["WSJ", "https://www.wsj.com", "2026-11-17"], ["Reuters", "https://www.reuters.com", "2026-11-16"]]);
+  assert.equal(out.items[0].url, DECODED);
+  assert.equal(out.edition, "US");
+  const news = recorder.seen.slice(before);
+  assert.equal(new URL(news[0].url, "http://x").searchParams.get("ceid"), "US:en");
+  assert.ok(news.length > 2 && news.every((e) => e.headers.cookie === "SOCS=CAI"));
+});
+
+test("news_search refuses a day that is not on the calendar, and a range that ends before it starts", async () => {
+  const { c } = await searcher();
+  const before = recorder.seen.length;
+  const bad = await searched(c, "news_search", { query: "Example Widgets AG", from: "2026-02-30", to: "2026-03-01" });
+  assert.equal(bad.error, true);
+  assert.match(bad.text, /not a calendar day/);
+  const reversed = await searched(c, "news_search", { query: "Example Widgets AG", from: "2026-11-18", to: "2026-11-13" });
+  assert.equal(reversed.error, true);
+  assert.match(reversed.text, /from 2026-11-18 is after to 2026-11-13/);
+  assert.equal(recorder.seen.length, before, "nothing was asked of Google");
+});
+
+test("neither search needs a start or a handle", async () => {
+  const { d, c } = await searcher();
+  assert.equal((await searched(c, "search", { query: "Example Widgets" })).error, false);
+  assert.equal((await searched(c, "news_search", { query: "Example Widgets AG", from: "2026-11-13", to: "2026-11-18" })).error, false);
+  assert.deepEqual(readdirSync(join(d.stateDir, "profiles")), []);
+  assert.deepEqual(ownProcesses(d.stateDir), []);
+});
+
+test("a search over its limit fails with an error result and its request is aborted", { timeout: 60_000 }, async () => {
+  const { c } = await searcher();
+  const r = await searched(c, "search", { query: "hang" });
+  assert.equal(r.error, true);
+  assert.match(r.text, /search ran over its 20 s limit and was stopped/);
+  for (let i = 0; i < 50 && !recorder.seen.some((e) => e.aborted); i++) await new Promise((ok) => setTimeout(ok, 100));
+  assert.ok(recorder.seen.some((e) => e.aborted), "the recorder saw the request closed");
+});
+
+test("a provider error fails with its status", async () => {
+  const { c } = await searcher();
+  assert.match((await searched(c, "search", { query: "fail" })).text, /HTTP 503/);
+  assert.match((await searched(c, "search", { query: "denied" })).text, /the MiniMax key was refused \(HTTP 401\)/);
+  const quota = await searched(c, "search", { query: "quota" });
+  assert.equal(quota.error, true);
+  assert.match(quota.text, /MiniMax error 1008: insufficient balance/);
+});
+
+/** Spawn the daemon directly, with only the given variables, and collect its exit code and stderr. */
+async function spawnRaw(env) {
+  const proc = spawn(process.execPath, [DAEMON], { stdio: ["ignore", "ignore", "pipe"],
+    env: { PATH: process.env.PATH, BROWSER_PORT: String(await freePort()), BROWSER_BASE_PROFILE: join(root, "base"),
+      BROWSER_STATE_DIR: mkdtempSync(join(root, "state-")), ...env } });
+  let stderr = "";
+  proc.stderr.on("data", (chunk) => { stderr += chunk; });
+  const timer = setTimeout(() => proc.kill("SIGKILL"), 5_000);
+  const code = await new Promise((ok) => proc.once("exit", ok));
+  clearTimeout(timer);
+  return { code, stderr };
+}
+
+test("the daemon without the key exits at once, naming the variable", async () => {
+  const r = await spawnRaw({});
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /BROWSER_MINIMAX_KEY is required/);
+});
+
+test("a test search origin off this machine is refused at start", async () => {
+  const r = await spawnRaw({ BROWSER_MINIMAX_KEY: KEY, BROWSER_TEST_SEARCH_ORIGIN: "https://search.example.test" });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /BROWSER_TEST_SEARCH_ORIGIN/);
+  assert.doesNotMatch(r.stderr, /listening on/);
+});
+
+test("the key is in no reply and no log line", async () => {
+  for (const d of searchDaemons) assert.equal(d.proc.exitCode, null, "a search daemon is still running");
+  for (const text of searchReplies) assert.ok(!text.includes(KEY));
+  for (const d of [main, ...searchDaemons]) {
+    assert.ok(!d.stderr.includes(KEY));
+    const logs = join(d.stateDir, "logs");
+    for (const name of readdirSync(logs)) assert.ok(!readFileSync(join(logs, name), "utf8").includes(KEY), name);
+  }
+  const lines = searchDaemons.flatMap((d) => readdirSync(join(d.stateDir, "logs")).filter((n) => /^search-\d{4}-\d{2}-\d{2}\.jsonl$/.test(n))
+    .flatMap((n) => readFileSync(join(d.stateDir, "logs", n), "utf8").trim().split("\n").map((l) => JSON.parse(l))));
+  assert.ok(lines.length >= 8);
+  for (const l of lines) assert.ok(l.tool && l.args && typeof l.ok === "boolean" && typeof l.ms === "number");
 });
