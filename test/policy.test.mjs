@@ -38,6 +38,7 @@ test("address ranges: mapped IPv4, link-local, multicast, documentation ranges",
   assert.ok(isPrivateAddress("::ffff:7f00:1"));
   assert.ok(!isPrivateAddress("::ffff:203.0.113.10"));
   assert.ok(isPrivateAddress("fe80::1"));
+  assert.ok(isPrivateAddress("fe80::1%eth0"));
   assert.ok(isPrivateAddress("fc00::1"));
   assert.ok(isPrivateAddress("::"));
   assert.ok(isPrivateAddress("224.0.0.1"));
@@ -67,6 +68,7 @@ test("refuse checks the addresses a name resolves to", async () => {
   assert.equal(await refuse("http://a.example/", answer("203.0.113.10")), null);
   assert.deepEqual(await refuse("http://a.example/", answer("127.0.0.1")), { reason: "resolves_private", address: "127.0.0.1" });
   assert.deepEqual(await refuse("http://a.example/", answer("10.9.9.9")), { reason: "resolves_private", address: "10.9.9.9" });
+  assert.deepEqual(await refuse("http://a.example/", answer("fe80::1%eth0")), { reason: "resolves_private", address: "fe80::1%eth0" });
   assert.deepEqual(await refuse("http://a.example/", answer("203.0.113.10", "10.0.0.1")), { reason: "resolves_private", address: "10.0.0.1" });
   assert.deepEqual(await refuse("http://a.example/", never), { reason: "unresolved" });
   assert.deepEqual(await refuse("http://a.example/", answer()), { reason: "unresolved" });

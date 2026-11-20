@@ -41,7 +41,8 @@ export function normalize(url) {
 
 /** Whether an IP address is in a private range. An IPv4-mapped IPv6 address is checked as the IPv4 address it carries. */
 export function isPrivateAddress(ip) {
-  const host = ip.toLowerCase().replace(/^\[|\]$/g, "");
+  // A zone (fe80::1%eth0, as a local resolver may answer) names an interface, not an address: checked without it.
+  const host = ip.toLowerCase().replace(/^\[|\]$/g, "").replace(/%.*$/, "");
   const family = isIP(host);
   if (family === 4) return PRIVATE.check(host, "ipv4");
   if (family !== 6) return false;
