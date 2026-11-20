@@ -40,7 +40,7 @@ Run `google-chrome --user-data-dir=<dir>` on the desktop, set the profile up, qu
 A named profile is a caller's own, a signed-in one say. To make one, run
 `google-chrome --user-data-dir=<BROWSER_PROFILE_ROOT>/<name>` on the desktop, sign in, then quit Chrome (Chrome
 allows one process per profile, so quit any desktop Chrome on it before a `start`). The daemon's browsers run on
-invisible displays, so signing in happens there. `start {profile: "<name>"}` runs on it directly: it is never
+invisible displays, so sign in on the desktop, not through the daemon. `start {profile: "<name>"}` runs on it directly: it is never
 copied or deleted, and the browser holds it until it ends. The daemon never creates a named profile.
 
 ## Run as a service

@@ -123,7 +123,7 @@ function server() {
     `Start a browser of your own: a real, headed Chrome. Returns its handle; pass it as \`browser\` to every other call.
 Without \`profile\` it runs on a throwaway copy of the base profile. With \`profile\` (the name of a profile the operator
 made, e.g. a signed-in one) it runs on that profile itself, with its cookies and logins. While your browser is open no
-other browser can open that profile: start fails at once, naming the browser that holds it. It ends on close, after 10
+other browser can open that profile: start fails at once, naming the browser that holds it. Your browser ends on close, after 10
 idle minutes, or when the service stops. At most 4 run at once: at the cap, start fails at once, so close one or try later.`,
     { profile: z.string().min(1).optional() },
     async ({ profile }) => {

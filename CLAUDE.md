@@ -32,7 +32,7 @@ reading a news article"), never by the private project it came from.
   and runs the `*.test.mjs` tests (`node --test`). Tests use local fixtures, never live sites.
 - **By hand**, today:
   1. `npm ci`;
-  2. start `node src/daemon.mjs` with `BROWSER_PORT`, `BROWSER_BASE_PROFILE` (an empty directory will do) and
+  2. start `node src/daemon.mjs` with `BROWSER_PORT`, `BROWSER_BASE_PROFILE` (an empty directory will do),
      `BROWSER_STATE_DIR` (a directory under `/tmp`), `BROWSER_PROFILE_ROOT` (a directory under `/tmp` with an
      empty subdirectory `a`) and `BROWSER_MINIMAX_KEY` (a real MiniMax key);
   3. `npx @modelcontextprotocol/inspector`, transport Streamable HTTP, URL `http://127.0.0.1:<port>/mcp`;
