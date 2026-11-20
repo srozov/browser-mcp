@@ -7,7 +7,7 @@
 
 import http from "node:http";
 import net from "node:net";
-import { isPrivateHost, refuse, resolveHost } from "./policy.mjs";
+import { isPrivateHost, refuse, reject, resolveHost } from "./policy.mjs";
 
 const DROPPED = new Set(["proxy-connection", "proxy-authorization"]);
 
@@ -36,23 +36,33 @@ export async function startProxy({ lookup, upstream, onRefused }) {
 
   server.on("request", async (req, res) => {
     try {
-      const refusal = await refuse(req.url, lookup);
-      if (refusal) {
-        onRefused({ url: req.url, ...refusal });
-        const body = `${req.url} is blocked (${refusal.reason})`;
-        res.writeHead(403, { "content-type": "text/plain", "x-source-policy": refusal.reason, "content-length": Buffer.byteLength(body) });
+      // One lookup per request: the address checked is the address connected to.
+      const reason = reject(req.url);
+      const target = reason ? { reason } : await resolveHost(new URL(req.url).hostname, lookup);
+      if (target.reason) {
+        onRefused({ url: req.url, reason: target.reason, address: target.address });
+        const body = `${req.url} is blocked (${target.reason})`;
+        res.writeHead(403, { "content-type": "text/plain", "x-source-policy": target.reason, "content-length": Buffer.byteLength(body) });
         return void res.end(body);
       }
       const url = new URL(req.url);
       const headers = Object.fromEntries(Object.entries(req.headers).filter(([k]) => !DROPPED.has(k)));
       const options = up
         ? { host: up.hostname, port: up.port, path: req.url, headers, method: req.method }
-        : { host: (await resolveHost(url.hostname, lookup)).address, port: url.port || 80, path: url.pathname + url.search,
-          headers, method: req.method, setHost: false };
+        : { host: target.address, port: url.port || 80, path: url.pathname + url.search, headers, method: req.method, setHost: false };
       const out = http.request(options, (back) => {
-        res.writeHead(back.statusCode, back.rawHeaders);
+        // A cut-off response must not take the daemon down with an unhandled error.
+        back.on("error", () => res.destroy());
+        // Only the proxy says a request was refused: a site's own x-source-policy header is dropped.
+        const raw = [];
+        for (let i = 0; i < back.rawHeaders.length; i += 2) {
+          if (back.rawHeaders[i].toLowerCase() !== "x-source-policy") raw.push(back.rawHeaders[i], back.rawHeaders[i + 1]);
+        }
+        res.writeHead(back.statusCode, raw);
         back.pipe(res);
       });
+      out.on("socket", track); // so close() ends a request still connecting or streaming
+      req.on("error", () => out.destroy());
       out.on("error", () => {
         if (res.headersSent) res.destroy();
         else res.writeHead(502).end();
