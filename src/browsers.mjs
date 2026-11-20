@@ -49,6 +49,12 @@ export function log(b, event) {
   appendFileSync(b.log, JSON.stringify({ ts: now(), browser: b.handle, ...event }) + "\n");
 }
 
+/** One audit line for a browser-free call (a search): no handle, so one file per UTC day. */
+export function searchLog(event) {
+  const ts = now();
+  appendFileSync(join(config.logs, `search-${ts.slice(0, 10)}.jsonl`), JSON.stringify({ ts, ...event }) + "\n");
+}
+
 /** A browser of one's own: a handle and a copy of the base profile. Chrome launches on the first call. */
 export function start() {
   if (table.size >= MAX_BROWSERS) {
@@ -169,8 +175,7 @@ export function run(b, fn) {
 export class CallTimeout extends Error {}
 
 /** Run fn within the call's time limit; past it the call fails. */
-export function limited(name, fn, onTimeout) {
-  const limit = config.callLimitMs;
+export function limited(name, fn, onTimeout, limit = config.callLimitMs) {
   let timer;
   const over = new Promise((_, err) => {
     timer = setTimeout(() => {
