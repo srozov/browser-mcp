@@ -33,13 +33,15 @@ reading a news article"), never by the private project it came from.
 - **By hand**, today:
   1. `npm ci`;
   2. start `node src/daemon.mjs` with `BROWSER_PORT`, `BROWSER_BASE_PROFILE` (an empty directory will do) and
-     `BROWSER_STATE_DIR` (a directory under `/tmp`) and `BROWSER_MINIMAX_KEY` (a real MiniMax key);
+     `BROWSER_STATE_DIR` (a directory under `/tmp`), `BROWSER_PROFILE_ROOT` (a directory under `/tmp` with an
+     empty subdirectory `a`) and `BROWSER_MINIMAX_KEY` (a real MiniMax key);
   3. `npx @modelcontextprotocol/inspector`, transport Streamable HTTP, URL `http://127.0.0.1:<port>/mcp`;
-  4. `start`, `browse open` on a page, `browse text`, `close`; then `search` on a query and
+  4. `start`, `browse open` on a page, `browse text`, `close`; `start {profile: "a"}`, `browse open`, a second
+     `start {profile: "a"}` fails naming the first, `close`; then `search` on a query and
      `news_search` on a query and a recent day range, with no `start`;
   5. stop the daemon with Ctrl-C;
-  6. check that `pgrep -f <state dir>` prints nothing, no Xvfb of its own is left, and `<state dir>/profiles` is
-     empty.
+  6. check that `pgrep -f <state dir>` prints nothing, no Xvfb of its own is left, `<state dir>/profiles` is
+     empty, `pgrep -f <profile root>` prints nothing, and `<profile root>/a` is still there.
 
   When the daemon changes, the change updates this section with it.
 
