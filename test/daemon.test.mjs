@@ -192,7 +192,7 @@ test("open refuses local, private, non-http and credentialed targets before navi
   const b = await start(c);
   const before = hits.length;
   for (const url of [`http://127.0.0.1:${main.port}/mcp`, "http://localhost/", "file:///etc/passwd", "http://10.9.9.9/x",
-    "http://[::ffff:127.0.0.1]/", "https://user:pw@ir.issuer.test/"]) {
+    "http://[::ffff:127.0.0.1]/", "https://user:pw@ir.issuer.test/", "data:text/html,<p>inline</p>"]) {
     const r = await browse(c, b, { action: "open", url });
     assert.equal(r.error, true, url);
     assert.match(r.text, /is blocked \((private_host|scheme|credentials_in_url)\)/, url);

@@ -4,7 +4,7 @@
 // console arrive with later tickets.
 
 import { policyLookup, rejected } from "./browsers.mjs";
-import { isDocumentType, refuse } from "./policy.mjs";
+import { isDocumentType, refuse, reject } from "./policy.mjs";
 
 const NAV_TIMEOUT_MS = 60_000;
 const TEXT_PAGE = 6000;
@@ -67,7 +67,9 @@ async function summary(b, p) {
  * was on, so the agent keeps its place.
  */
 export async function open(b, url) {
-  const refusal = await refuse(url, policyLookup());
+  // `refuse` lets a page's inline data: and blob: requests through; `open` takes http(s) only, as the readers' did.
+  const scheme = reject(url);
+  const refusal = scheme ? { reason: scheme } : await refuse(url, policyLookup());
   if (refusal) {
     rejected(b, "open", url, refusal.reason, refusal.address);
     throw new Error(`${url} is blocked (${refusal.reason}${refusal.address ? ` ${refusal.address}` : ""})`);
