@@ -1,12 +1,15 @@
 // A synthetic issuer "internet" behind a local forward proxy, for the offline tests (BROWSER_TEST_PROXY).
 // Hosts: ir.issuer.test (the issuer), cdn.shared.test (a shared document CDN), and third parties. All
 // names and figures are invented. 10.9.9.9 stands for a private host: the browser must never reach it,
-// so the proxy must never log it.
+// so the proxy must never log it. TEST_HOSTS is the DNS of the tests: every host maps to the documentation address
+// 203.0.113.10, except rebind.test (127.0.0.1) and inside.test (10.9.9.9), which are public names that resolve
+// to private addresses; nowhere.test does not resolve.
 //
 // The annual report has no share count; the results presentation on the issuer's own site does, and so
 // does an older notice in a register.
 
 import { appendFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 
 /** A minimal PDF: one page per array of text lines. */
@@ -61,6 +64,14 @@ const PRESENTATION = pdf([
   ["Share data at 31 December 2025", "Registered shares issued 76,000,000",
     "Treasury shares 1,500,000", "Shares outstanding 74,500,000"],
 ]);
+
+export const TEST_HOSTS = {
+  ...Object.fromEntries(["ir.issuer.test", "cdn.shared.test", "widget.thirdparty.test", "api.thirdparty.test", "portal.thirdparty.test",
+    "ws.thirdparty.test", "evil.test", "filings.regulator.test", "register.exchange.test", "bucket.storage.test"]
+    .map((host) => [host, ["203.0.113.10"]])),
+  "rebind.test": ["127.0.0.1"],
+  "inside.test": ["10.9.9.9"],
+};
 
 const ISSUER = "http://ir.issuer.test";
 
@@ -147,6 +158,17 @@ const PAGES = {
       };
     </script>
     </body></html>`,
+  "ir.issuer.test/policy": `<html><head><title>Policy</title></head><body><main><p>POLICY PAGE</p>
+    <script>for (const host of ["rebind.test", "inside.test", "nowhere.test"]) fetch("http://" + host + "/data").catch(() => {});</script>
+    </main></body></html>`,
+  "ir.issuer.test/sockets": `<html><head><title>Sockets</title></head><body><main><p>SOCKETS PAGE</p>
+    <script>for (const host of ["ws.thirdparty.test", "10.9.9.9", "rebind.test"]) {
+      const say = (what) => document.querySelector("main").insertAdjacentHTML("beforeend", "<p>WS " + host + " " + what + "</p>");
+      const socket = new WebSocket("ws://" + host + "/feed");
+      socket.onopen = () => say("OPEN");
+      socket.onmessage = (event) => say("MESSAGE " + event.data);
+      socket.onerror = () => say("ERROR");
+    }</script></main></body></html>`,
   "widget.thirdparty.test/quote": "<p>THIRD PARTY QUOTE 123.45</p>",
   "evil.test/js": "<p>EVIL JS TARGET</p>",
   "evil.test/popup": "<p>EVIL POPUP</p>",
@@ -216,6 +238,8 @@ export async function startFixtureSite(port = 0) {
       return res.writeHead(200, { "content-type": "text/html" }).end(
         `<html><head><title>Cookie</title></head><body><main><p>Cookie: ${req.headers.cookie || "none"}</p></main></body></html>`);
     }
+    if (key === "ir.issuer.test/redirect-tls") return res.writeHead(302, { location: "https://10.9.9.9/secret" }).end();
+    if (key === "ir.issuer.test/redirect-loopback") return res.writeHead(302, { location: "http://127.0.0.1:8081/landing" }).end();
     if (key === "ir.issuer.test/redirect-out") return res.writeHead(302, { location: "http://evil.test/landing" }).end();
     if (key === "cdn.shared.test/space1/moved.pdf") return res.writeHead(302, { location: "http://10.9.9.9/stolen.pdf" }).end();
     if (key === "ir.issuer.test/files/via-storage") return res.writeHead(302, { location: "http://bucket.storage.test/capital.pdf?Signature=x" }).end();
@@ -232,6 +256,15 @@ export async function startFixtureSite(port = 0) {
     socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
     if (head.length) socket.unshift(head);
     server.emit("connection", socket);
+  });
+  // A WebSocket to ws.thirdparty.test/feed (it arrives in a tunnel, which is served as a connection): one text frame.
+  server.on("upgrade", (req, socket) => {
+    const key = `${req.headers.host}${new URL(req.url, "http://x").pathname}`;
+    hits.push(key);
+    if (key !== "ws.thirdparty.test/feed") return void socket.destroy();
+    const accept = createHash("sha1").update(req.headers["sec-websocket-key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
+    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+    socket.write(Buffer.concat([Buffer.from([0x81, 5]), Buffer.from("WS OK")]));
   });
   await new Promise((ok) => server.listen(port, "127.0.0.1", ok));
   return { server, url: `http://127.0.0.1:${server.address().port}`, hits, issuer: ISSUER };

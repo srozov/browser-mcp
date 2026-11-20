@@ -1,14 +1,17 @@
 // The browser table: one headed Chrome per handle, each with its own Xvfb display, its own copy of the base
 // profile, its own tabs and its own call queue. The launch, reset, cleanup, time limit and audit log are
 // moved from the page readers' browser server, where they were the state of one process; here they are
-// fields of an entry. Calls with different handles share nothing: no module-level browser state.
+// fields of an entry. So are the request guard and the rejection log (moved), and the policy proxy (new,
+// proxy.mjs). Calls with different handles share nothing: no module-level browser state.
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, cpSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "patchright";
+import { refuse, systemLookup } from "./policy.mjs";
 import { profilePath } from "./profiles.mjs";
+import { startProxy } from "./proxy.mjs";
 
 const MAX_BROWSERS = 4;
 const IDLE_MS = 10 * 60_000;
@@ -25,8 +28,9 @@ let config = null;
 const now = () => new Date().toISOString();
 
 /** Called once by the daemon. Clones and old logs left by a dead daemon are deleted here. */
-export function configure({ baseProfile, profileRoot, stateDir, proxy, callLimitMs, idleMs }) {
-  config = { baseProfile, profileRoot, profiles: join(stateDir, "profiles"), logs: join(stateDir, "logs"), proxy,
+/** `proxy` is the fixture proxy of the offline tests: the policy proxy's upstream. `lookup` resolves names for the policy. */
+export function configure({ baseProfile, profileRoot, stateDir, proxy, lookup, callLimitMs, idleMs }) {
+  config = { baseProfile, profileRoot, profiles: join(stateDir, "profiles"), logs: join(stateDir, "logs"), upstream: proxy, lookup: lookup ?? systemLookup,
     callLimitMs: callLimitMs ?? CALL_LIMIT_MS, idleMs: idleMs ?? IDLE_MS };
   // Every clone belongs to a dead daemon (one daemon per state directory). Its Chrome and Xvfb are
   // killed by systemd's control-group kill, not here.
@@ -49,6 +53,36 @@ export function configure({ baseProfile, profileRoot, stateDir, proxy, callLimit
 export function log(b, event) {
   appendFileSync(b.log, JSON.stringify({ ts: now(), browser: b.handle, ...event }) + "\n");
 }
+
+/** The lookup the source policy uses, for `open`. */
+export const policyLookup = () => config.lookup;
+
+/** A refused request, in the browser's own log; `open` reads `lastRefusal` to say what a redirect hop hit. */
+export function rejected(b, via, url, reason, address) {
+  log(b, { type: "rejected", via, url, reason, ...(address ? { address } : {}) });
+  b.lastRefusal = { via, url, reason, address, at: Date.now() };
+}
+
+/** The request guard: the early refusal for a page's requests, with how each was made. Redirect hops and sockets are the proxy's. */
+function guard(b) {
+  return async (route, req) => {
+    const refusal = await refuse(req.url(), config.lookup);
+    if (!refusal) return route.continue().catch(closed);
+    let via = req.resourceType();
+    try {
+      if (req.isNavigationRequest()) via = req.frame().parentFrame() === null ? "navigation" : "frame";
+    } catch {
+      // A request without a frame (a worker) is logged by its resource type.
+    }
+    rejected(b, via, req.url(), refusal.reason, refusal.address);
+    return route.abort("blockedbyclient").catch(closed);
+  };
+}
+
+// A page that closed under a pending request: nothing to continue or abort.
+const closed = (error) => {
+  if (!/Target (page, context or browser )?(has been )?closed|Target closed/i.test(String(error?.message))) throw error;
+};
 
 /** One audit line for a browser-free call (a search): no handle, so one file per UTC day. */
 export function searchLog(event) {
@@ -80,7 +114,7 @@ export function start({ profile: name } = {}) {
   const handle = randomBytes(12).toString("base64url");
   const profile = named ?? join(config.profiles, handle);
   if (!named) cpSync(config.baseProfile, profile, { recursive: true, filter: (src) => !/^Singleton/.test(src.split("/").pop()) });
-  const b = { handle, profile, named: named ? name : null, log: join(config.logs, `${handle}.jsonl`), xvfb: null, context: null, starting: null,
+  const b = { handle, profile, named: named ? name : null, log: join(config.logs, `${handle}.jsonl`), xvfb: null, proxy: null, lastRefusal: null, context: null, starting: null,
     retiring: Promise.resolve(), tabs: new Map(), current: null, front: null, tabCount: 0, lastGood: new WeakMap(),
     queue: Promise.resolve(), lastUsed: Date.now(), busy: 0, closed: false };
   table.set(handle, b);
@@ -136,6 +170,13 @@ export async function ensureBrowser(b) {
       gone(b);
       b.xvfb = xvfb;
     }
+    if (!b.proxy) {
+      const proxy = await startProxy({ lookup: config.lookup, upstream: config.upstream,
+        onRefused: ({ url, reason, address }) => rejected(b, "connection", url, reason, address) });
+      if (b.closed) await proxy.close();
+      gone(b);
+      b.proxy = proxy;
+    }
     const context = await chromium.launchPersistentContext(b.profile, {
       headless: false,
       channel: "chrome",
@@ -143,26 +184,30 @@ export async function ensureBrowser(b) {
       viewport: { width: 1280, height: 1000 },
       serviceWorkers: "block",
       args: ["--no-first-run", "--disable-session-crashed-bubble", "--password-store=basic",
-        "--disable-background-networking", "--disable-component-update"],
-      ...(config.proxy ? { proxy: { server: config.proxy } } : {}),
+        "--disable-background-networking", "--disable-component-update",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"],
+      proxy: { server: `http://127.0.0.1:${b.proxy.port}` },
     });
     if (b.closed) {
       await context.close().catch(() => {});
       gone(b);
     }
     b.context = context;
-    // The source policy (#13) installs its request guard here, before the first navigation of any tab.
+    await context.route("**/*", guard(b));
     context.on("page", (page) => addTab(b, page));
     for (const page of context.pages()) b.current = addTab(b, page);
     if (!b.current) b.current = addTab(b, await context.newPage());
-    log(b, { type: "browser_started", display: b.xvfb.display, xvfb_pid: b.xvfb.proc.pid, profile: b.profile });
+    log(b, { type: "browser_started", display: b.xvfb.display, xvfb_pid: b.xvfb.proc.pid, proxy_port: b.proxy.port, profile: b.profile });
   })().finally(() => {
     b.starting = null;
   });
   return b.starting;
 }
 
-/** Drop a browser stuck in a call that ran over its limit; the next call starts a fresh one on the same profile. */
+/**
+ * Drop a browser stuck in a call that ran over its limit; the next call starts a fresh one on the same profile.
+ * The policy proxy is kept: it belongs to the entry, not to one Chrome.
+ */
 export function resetBrowser(b, reason) {
   const old = b.context;
   b.context = null;
@@ -219,6 +264,7 @@ export async function close(handle, reason) {
       await b.context?.close();
     } catch {}
     b.xvfb?.proc.kill("SIGTERM");
+    await b.proxy?.close();
     await Promise.race([b.retiring, new Promise((ok) => setTimeout(ok, RETIRE_MS).unref())]);
     if (!b.named) rmSync(b.profile, { recursive: true, force: true, maxRetries: 3 });
   } finally {
@@ -233,7 +279,8 @@ export function closeAll(reason) {
 
 /**
  * For the process's exit hook, whatever path ends it: no await, no Chrome of its own is waited for. It covers
- * the entries a close is still ending too: on SIGINT the process exits while closeAll is under way.
+ * the entries a close is still ending too: on SIGINT the process exits while closeAll is under way. The policy
+ * proxies are listeners of this process and end with it.
  */
 export function exitSync() {
   for (const b of [...table.values(), ...closing]) {
