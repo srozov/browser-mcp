@@ -54,6 +54,23 @@ test("a response cut off mid-body ends that request, not the process", async () 
   upstream.close();
 });
 
+test("a kept-alive upstream socket gets the proxy's listeners once, however many requests it carries", async () => {
+  const sockets = new Set();
+  const upstream = createServer((req, res) => { sockets.add(req.socket); res.end("ok"); });
+  const lookup = async () => [{ address: "203.0.113.10", family: 4 }];
+  const proxy = await startProxy({ lookup, upstream: `http://127.0.0.1:${await listen(upstream)}`, onRefused: () => {} });
+  const warnings = [];
+  const warn = (w) => warnings.push(w.name);
+  process.on("warning", warn);
+  for (let i = 0; i < 15; i++) assert.equal((await via(proxy.port, "http://site.example/x").done).statusCode, 200);
+  await new Promise((ok) => setImmediate(ok));
+  process.off("warning", warn);
+  assert.equal(sockets.size, 1, "one kept-alive socket carried every request");
+  assert.deepEqual(warnings, []);
+  await proxy.close();
+  upstream.close();
+});
+
 test("a site's own x-source-policy header is not passed on", async () => {
   const upstream = createServer((req, res) => res.writeHead(200, { "x-source-policy": "private_host" }).end("ok"));
   const lookup = async () => [{ address: "203.0.113.10", family: 4 }];

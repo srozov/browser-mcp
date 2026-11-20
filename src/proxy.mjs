@@ -21,6 +21,8 @@ export async function startProxy({ lookup, upstream, onRefused }) {
   const up = upstream ? new URL(upstream) : null;
   const sockets = new Set();
   const track = (socket) => {
+    // A kept-alive socket to an origin or upstream comes back for every request: listen on it once.
+    if (sockets.has(socket)) return socket;
     sockets.add(socket);
     socket.once("close", () => sockets.delete(socket));
     socket.on("error", () => socket.destroy());
