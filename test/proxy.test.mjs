@@ -71,6 +71,26 @@ test("a kept-alive upstream socket gets the proxy's listeners once, however many
   upstream.close();
 });
 
+test("closing one browser's proxy leaves another proxy's requests alone", async () => {
+  // Both proxies send to one upstream; a kept-alive socket shared through a common agent would carry the second
+  // proxy's request after the first proxy's, and the first proxy's close would cut it.
+  const upstream = createServer((req, res) => {
+    if (req.url.endsWith("/slow")) setTimeout(() => res.end("slow"), 300);
+    else res.end("ok");
+  });
+  const lookup = async () => [{ address: "203.0.113.10", family: 4 }];
+  const options = { lookup, upstream: `http://127.0.0.1:${await listen(upstream)}`, onRefused: () => {} };
+  const [a, b] = [await startProxy(options), await startProxy(options)];
+  assert.equal((await via(a.port, "http://site.example/x").done).statusCode, 200);
+  const slow = via(b.port, "http://site.example/slow").done;
+  await new Promise((ok) => setTimeout(ok, 100));
+  await a.close();
+  const res = await slow;
+  assert.equal(res.statusCode, 200, String(res));
+  await b.close();
+  upstream.close();
+});
+
 test("a site's own x-source-policy header is not passed on", async () => {
   const upstream = createServer((req, res) => res.writeHead(200, { "x-source-policy": "private_host" }).end("ok"));
   const lookup = async () => [{ address: "203.0.113.10", family: 4 }];

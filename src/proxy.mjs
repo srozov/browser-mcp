@@ -20,9 +20,10 @@ function splitAuthority(authority) {
 export async function startProxy({ lookup, upstream, onRefused }) {
   const up = upstream ? new URL(upstream) : null;
   const sockets = new Set();
+  // Its own agent: a kept-alive socket in Node's shared one would carry other browsers' requests too, and this
+  // proxy's close would cut them. close() destroys every socket this agent holds.
+  const agent = new http.Agent({ keepAlive: true });
   const track = (socket) => {
-    // A kept-alive socket to an origin or upstream comes back for every request: listen on it once.
-    if (sockets.has(socket)) return socket;
     sockets.add(socket);
     socket.once("close", () => sockets.delete(socket));
     socket.on("error", () => socket.destroy());
@@ -50,8 +51,8 @@ export async function startProxy({ lookup, upstream, onRefused }) {
       const url = new URL(req.url);
       const headers = Object.fromEntries(Object.entries(req.headers).filter(([k]) => !DROPPED.has(k)));
       const options = up
-        ? { host: up.hostname, port: up.port, path: req.url, headers, method: req.method }
-        : { host: target.address, port: url.port || 80, path: url.pathname + url.search, headers, method: req.method, setHost: false };
+        ? { host: up.hostname, port: up.port, path: req.url, headers, method: req.method, agent }
+        : { host: target.address, port: url.port || 80, path: url.pathname + url.search, headers, method: req.method, setHost: false, agent };
       const out = http.request(options, (back) => {
         // A cut-off response must not take the daemon down with an unhandled error.
         back.on("error", () => res.destroy());
@@ -63,7 +64,6 @@ export async function startProxy({ lookup, upstream, onRefused }) {
         res.writeHead(back.statusCode, raw);
         back.pipe(res);
       });
-      out.on("socket", track); // so close() ends a request still connecting or streaming
       req.on("error", () => out.destroy());
       out.on("error", () => {
         if (res.headersSent) res.destroy();
@@ -128,6 +128,7 @@ export async function startProxy({ lookup, upstream, onRefused }) {
     port: server.address().port,
     close: () => new Promise((ok) => {
       server.close(ok);
+      agent.destroy();
       for (const socket of sockets) socket.destroy();
     }),
   };
