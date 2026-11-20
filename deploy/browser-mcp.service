@@ -1,0 +1,14 @@
+[Unit]
+Description=browser-mcp: a browser of its own per caller, over MCP
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/browser-mcp/env
+ExecStart=/usr/bin/node /path/to/browser-mcp/src/daemon.mjs
+Restart=on-failure
+RestartSec=2
+# A crash leaves Chrome and Xvfb behind: systemd kills the whole group before a restart, and the daemon deletes the clones.
+KillMode=control-group
+
+[Install]
+WantedBy=default.target
