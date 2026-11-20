@@ -1,7 +1,8 @@
 // The browser table: one headed Chrome per handle, each with its own Xvfb display, its own copy of the base
 // profile, its own tabs and its own call queue. The launch, reset, cleanup, time limit and audit log are
 // moved from the page readers' browser server, where they were the state of one process; here they are
-// fields of an entry. So are the request guard and the rejection log (moved), and the policy proxy (new, proxy.mjs). Calls with different handles share nothing: no module-level browser state.
+// fields of an entry. So are the request guard and the rejection log (moved), and the policy proxy (new,
+// proxy.mjs). Calls with different handles share nothing: no module-level browser state.
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
