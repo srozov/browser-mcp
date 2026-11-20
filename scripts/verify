@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# The check every branch must pass before review: install, syntax check, tests. Exit 0 = pass.
+# It runs from a fresh worktree and under a service's PATH, so it installs and finds node itself.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+export PATH="/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+
+npm ci --no-audit --no-fund --loglevel=error
+
+# Every tracked module parses.
+git ls-files -z '*.mjs' '*.js' | xargs -0 -r -n1 node --check
+
+# Tests: *.test.mjs files anywhere, once there are any.
+if git ls-files '*.test.mjs' | grep -q .; then
+  node --test $(git ls-files '*.test.mjs')
+fi
