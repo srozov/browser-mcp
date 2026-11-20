@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -114,6 +114,7 @@ after(async () => {
   for (const d of daemons) d.proc.kill("SIGTERM");
   await Promise.all(daemons.map((d) => d.exited));
   site?.server.close();
+  if (root) rmSync(root, { recursive: true, force: true });
 });
 
 test("a page opens with its third-party content; open needs a url", async () => {
