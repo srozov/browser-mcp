@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, request } from "node:http";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
@@ -41,11 +41,13 @@ async function freePort() {
 
 /** Spawn the daemon on a fresh state directory (or the given one); resolves once it listens. */
 async function daemon(env = {}, stateDir = mkdtempSync(join(root, "state-"))) {
+  // Each daemon gets a profile root of its own, so one daemon's crash stand-in never kills another's Chrome.
+  const profileRoot = env.BROWSER_PROFILE_ROOT ?? mkdtempSync(join(root, "named-"));
   const port = await freePort();
   const proc = spawn(process.execPath, [DAEMON], { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env,
     BROWSER_PORT: String(port), BROWSER_BASE_PROFILE: join(root, "base"), BROWSER_STATE_DIR: stateDir,
-    BROWSER_MINIMAX_KEY: KEY, BROWSER_TEST_SEARCH_ORIGIN: recorder.url, BROWSER_TEST_PROXY: site.url, BROWSER_TEST_CALL_LIMIT_MS: String(LIMIT_MS), ...env } });
-  const d = { proc, port, stateDir, url: `http://127.0.0.1:${port}/mcp`, stderr: "",
+    BROWSER_PROFILE_ROOT: profileRoot, BROWSER_MINIMAX_KEY: KEY, BROWSER_TEST_SEARCH_ORIGIN: recorder.url, BROWSER_TEST_PROXY: site.url, BROWSER_TEST_CALL_LIMIT_MS: String(LIMIT_MS), ...env } });
+  const d = { proc, port, stateDir, profileRoot, url: `http://127.0.0.1:${port}/mcp`, stderr: "",
     exited: new Promise((ok) => proc.once("exit", ok)) };
   daemons.push(d);
   await new Promise((ok, err) => {
@@ -107,8 +109,8 @@ async function call(c, name, args) {
   return { error: !!r.isError, text: r.content.filter((x) => x.type === "text").map((x) => x.text).join("\n"), t0, t1 };
 }
 
-async function start(c) {
-  const r = await call(c, "start", {});
+async function start(c, args = {}) {
+  const r = await call(c, "start", args);
   assert.equal(r.error, false, r.text);
   return JSON.parse(r.text).browser;
 }
@@ -124,12 +126,13 @@ const alive = (pid) => {
   }
 };
 
-/** Processes that belong to a daemon's state directory: Chromes (by their profile path) and Xvfbs (by the pids it logged). */
-function ownProcesses(stateDir) {
+/** Processes that belong to a daemon: Chromes (by their profile path, in the state directory or the profile root) and Xvfbs (by the pids it logged). */
+function ownProcesses(stateDir, profileRoot) {
   const found = [];
   for (const pid of readdirSync("/proc").filter((n) => /^\d+$/.test(n))) {
     try {
-      if (readFileSync(`/proc/${pid}/cmdline`, "utf8").includes(stateDir)) found.push(Number(pid));
+      const cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+      if (cmdline.includes(stateDir) || (profileRoot && cmdline.includes(profileRoot))) found.push(Number(pid));
     } catch {}
   }
   const logs = join(stateDir, "logs");
@@ -205,7 +208,7 @@ let four;
 
 test("four callers at once each read only their own page, and their calls overlap", { timeout: 120_000 }, async () => {
   const cs = await Promise.all(PAGES.map(() => client(main.url)));
-  const handles = await Promise.all(cs.map(start));
+  const handles = await Promise.all(cs.map((c) => start(c)));
   const opened = await Promise.all(cs.map((c, i) => browse(c, handles[i], { action: "open", url: `${ISSUER}/${PAGES[i][0]}` })));
   for (const r of opened) assert.equal(r.error, false, r.text);
   assert.ok(overlap(opened), "the opens ran at the same time");
@@ -291,6 +294,101 @@ test("a call over its limit fails and restarts only that browser, which keeps it
   await call(c, "close", { browser: b });
 });
 
+test("a named profile keeps its cookies across browsers and stays after close; a throwaway copy is still deleted", { timeout: 120_000 }, async () => {
+  const c = await client(main.url);
+  mkdirSync(join(main.profileRoot, "keep"));
+  const first = await start(c, { profile: "keep" });
+  await browse(c, first, { action: "open", url: `${ISSUER}/set-cookie?v=n1` });
+  await call(c, "close", { browser: first });
+  assert.ok(readdirSync(join(main.profileRoot, "keep")).length > 0, "Chrome wrote its profile and close left it");
+  const second = await start(c, { profile: "keep" });
+  const shown = await browse(c, second, { action: "open", url: `${ISSUER}/show-cookie` });
+  assert.match(shown.text, /Cookie: visit=n1/);
+  await call(c, "close", { browser: second });
+  const copy = await start(c);
+  await browse(c, copy, { action: "open", url: `${ISSUER}/reports` });
+  await call(c, "close", { browser: copy });
+  assert.equal(existsSync(join(main.stateDir, "profiles", copy)), false);
+});
+
+test("a second start on a held profile fails at once, naming the holder; after close it works", { timeout: 120_000 }, async () => {
+  const c = await client(main.url);
+  mkdirSync(join(main.profileRoot, "held"));
+  const h1 = await start(c, { profile: "held" });
+  await browse(c, h1, { action: "open", url: `${ISSUER}/reports` });
+  const second = await call(c, "start", { profile: "held" });
+  assert.equal(second.error, true);
+  assert.ok(second.t1 - second.t0 < 1000);
+  assert.match(second.text, /is in use by browser/);
+  assert.ok(second.text.includes(h1.slice(0, 6) + "…"));
+  assert.ok(!second.text.includes(h1), "the refusal must not carry the full handle");
+  await call(c, "close", { browser: h1 });
+  await call(c, "close", { browser: await start(c, { profile: "held" }) });
+});
+
+test("bad profile names fail clearly and start nothing", async () => {
+  const c = await client(main.url);
+  mkdirSync(join(main.profileRoot, "target"), { recursive: true });
+  symlinkSync(join(main.profileRoot, "target"), join(main.profileRoot, "link"));
+  const clones = () => readdirSync(join(main.stateDir, "profiles"));
+  const before = clones();
+  for (const [name, pattern] of [["../x", /not a profile name/], ["a/b", /not a profile name/], ["..", /not a profile name/],
+    ["missing", /no profile/], ["link", /not a plain directory/]]) {
+    const r = await call(c, "start", { profile: name });
+    assert.equal(r.error, true, name);
+    assert.match(r.text, pattern, name);
+  }
+  assert.deepEqual(clones(), before);
+});
+
+test("a restart after a time limit keeps the hold, and the handle still works on the profile", { timeout: 120_000 }, async () => {
+  const c = await client(main.url);
+  mkdirSync(join(main.profileRoot, "restart"));
+  const h = await start(c, { profile: "restart" });
+  await browse(c, h, { action: "open", url: `${ISSUER}/set-cookie?v=r1` });
+  const hang = await browse(c, h, { action: "open", url: `${ISSUER}/hang` });
+  assert.equal(hang.error, true);
+  assert.match(hang.text, /ran over its 20 s limit.*the browser was restarted/);
+  assert.ok(events(main.stateDir, h).some((e) => e.type === "browser_reset"));
+  const again = await call(c, "start", { profile: "restart" });
+  assert.equal(again.error, true);
+  assert.ok(again.text.includes(h.slice(0, 6) + "…"));
+  assert.ok(!again.text.includes(h));
+  const shown = await browse(c, h, { action: "open", url: `${ISSUER}/show-cookie` });
+  assert.equal(shown.error, false, shown.text);
+  assert.match(shown.text, /Cookie: visit=r1/);
+  await call(c, "close", { browser: h });
+});
+
+test("after a crash, a new daemon opens the named profile", { timeout: 120_000 }, async () => {
+  const d = await daemon();
+  mkdirSync(join(d.profileRoot, "crash"));
+  const c = await client(d.url);
+  // A cookie written by a browser that closed cleanly: the crash must not lose what the profile already had.
+  const before = await start(c, { profile: "crash" });
+  await browse(c, before, { action: "open", url: `${ISSUER}/set-cookie?v=c1` });
+  await call(c, "close", { browser: before });
+  const h = await start(c, { profile: "crash" });
+  await browse(c, h, { action: "open", url: `${ISSUER}/reports` });
+  d.proc.kill("SIGKILL");
+  await d.exited;
+  for (const pid of ownProcesses(d.stateDir, d.profileRoot)) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {}
+  }
+  assert.ok(existsSync(join(d.profileRoot, "crash")));
+  assert.ok(lstatSync(join(d.profileRoot, "crash", "SingletonLock"), { throwIfNoEntry: false }), "the crash left Chrome's lock");
+  const d2 = await daemon({ BROWSER_PROFILE_ROOT: d.profileRoot }, d.stateDir);
+  const c2 = await client(d2.url);
+  const h2 = await start(c2, { profile: "crash" });
+  const shown = await browse(c2, h2, { action: "open", url: `${ISSUER}/show-cookie` });
+  assert.equal(shown.error, false, shown.text);
+  assert.match(shown.text, /Cookie: visit=c1/);
+  await call(c2, "close", { browser: h2 });
+  assert.ok(existsSync(join(d.profileRoot, "crash")));
+});
+
 test("a Host header that is not local is refused", async () => {
   const post = (host) => new Promise((ok, err) => {
     const req = request({ host: "127.0.0.1", port: main.port, path: "/mcp", method: "POST",
@@ -315,7 +413,7 @@ test("an idle browser is closed and its profile copy deleted", { timeout: 120_00
   assert.equal(existsSync(join(d.stateDir, "profiles", b)), false);
   assert.ok(events(d.stateDir, b).some((e) => e.type === "closed" && e.reason === "idle"));
   assert.match((await browse(c, b, { action: "text" })).text, /unknown browser/);
-  assert.deepEqual(ownProcesses(d.stateDir), []);
+  assert.deepEqual(ownProcesses(d.stateDir, d.profileRoot), []);
 });
 
 // On SIGINT patchright's own handler exits the process while the daemon's closes are still under way.
@@ -326,12 +424,12 @@ for (const signal of ["SIGTERM", "SIGINT"]) test(`after ${signal} no Chrome, Xvf
     const b = await start(c);
     assert.equal((await browse(c, b, { action: "open", url })).error, false);
   }
-  assert.ok(ownProcesses(d.stateDir).length > 0);
+  assert.ok(ownProcesses(d.stateDir, d.profileRoot).length > 0);
   d.proc.kill(signal);
   await d.exited;
   // The exit hook only signals each Xvfb: give them a moment to go.
-  for (let i = 0; i < 30 && ownProcesses(d.stateDir).length; i++) await new Promise((ok) => setTimeout(ok, 100));
-  assert.deepEqual(ownProcesses(d.stateDir), []);
+  for (let i = 0; i < 30 && ownProcesses(d.stateDir, d.profileRoot).length; i++) await new Promise((ok) => setTimeout(ok, 100));
+  assert.deepEqual(ownProcesses(d.stateDir, d.profileRoot), []);
   assert.deepEqual(readdirSync(join(d.stateDir, "profiles")), []);
 });
 
@@ -347,7 +445,7 @@ test("a daemon started after a killed one deletes its leftover profile copies an
   d.proc.kill("SIGKILL");
   await d.exited;
   // What systemd's control-group kill does to the leftovers.
-  for (const pid of ownProcesses(d.stateDir)) {
+  for (const pid of ownProcesses(d.stateDir, d.profileRoot)) {
     try {
       process.kill(pid, "SIGKILL");
     } catch {}
@@ -417,7 +515,7 @@ test("neither search needs a start or a handle", async () => {
   assert.equal((await searched(c, "search", { query: "Example Widgets" })).error, false);
   assert.equal((await searched(c, "news_search", { query: "Example Widgets AG", from: "2026-11-13", to: "2026-11-18" })).error, false);
   assert.deepEqual(readdirSync(join(d.stateDir, "profiles")), []);
-  assert.deepEqual(ownProcesses(d.stateDir), []);
+  assert.deepEqual(ownProcesses(d.stateDir, d.profileRoot), []);
 });
 
 test("a search over its limit fails with an error result and its request is aborted", { timeout: 60_000 }, async () => {
@@ -442,7 +540,7 @@ test("a provider error fails with its status", async () => {
 async function spawnRaw(env) {
   const proc = spawn(process.execPath, [DAEMON], { stdio: ["ignore", "ignore", "pipe"],
     env: { PATH: process.env.PATH, BROWSER_PORT: String(await freePort()), BROWSER_BASE_PROFILE: join(root, "base"),
-      BROWSER_STATE_DIR: mkdtempSync(join(root, "state-")), ...env } });
+      BROWSER_STATE_DIR: mkdtempSync(join(root, "state-")), BROWSER_PROFILE_ROOT: mkdtempSync(join(root, "named-")), ...env } });
   let stderr = "";
   proc.stderr.on("data", (chunk) => { stderr += chunk; });
   const timer = setTimeout(() => proc.kill("SIGKILL"), 5_000);
@@ -455,6 +553,21 @@ test("the daemon without the key exits at once, naming the variable", async () =
   const r = await spawnRaw({});
   assert.equal(r.code, 1);
   assert.match(r.stderr, /BROWSER_MINIMAX_KEY is required/);
+});
+
+test("the daemon without BROWSER_PROFILE_ROOT, or with one that overlaps the base profile or the copies, exits at once", async () => {
+  const none = await spawnRaw({ BROWSER_MINIMAX_KEY: KEY, BROWSER_PROFILE_ROOT: "" });
+  assert.equal(none.code, 1);
+  assert.match(none.stderr, /BROWSER_PROFILE_ROOT is required/);
+  const base = await spawnRaw({ BROWSER_MINIMAX_KEY: KEY, BROWSER_PROFILE_ROOT: join(root, "base") });
+  assert.equal(base.code, 1);
+  assert.match(base.stderr, /must not be, contain or sit inside BROWSER_BASE_PROFILE/);
+  const state = mkdtempSync(join(root, "state-"));
+  mkdirSync(join(state, "profiles", "keepme"), { recursive: true });
+  const clones = await spawnRaw({ BROWSER_MINIMAX_KEY: KEY, BROWSER_STATE_DIR: state, BROWSER_PROFILE_ROOT: join(state, "profiles") });
+  assert.equal(clones.code, 1);
+  assert.doesNotMatch(clones.stderr, /listening on/);
+  assert.ok(existsSync(join(state, "profiles", "keepme")), "nothing was wiped");
 });
 
 test("a test search origin off this machine is refused at start", async () => {

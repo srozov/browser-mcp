@@ -2,16 +2,19 @@
 // The browser daemon: one service on 127.0.0.1 speaking MCP over Streamable HTTP, with a headed Chrome of its
 // own per caller, addressed by a handle. The launch, time limits, audit log and open/text are moved from the
 // page readers' browser server (browsers.mjs, browse.mjs); the web and news searches are moved too (search.mjs,
-// google-news.mjs) and need no browser. This file is the wiring: environment, HTTP, tools, signals.
+// google-news.mjs) and need no browser. The profile root variable is moved from the same server; profiles.mjs is
+// new. This file is the wiring: environment, HTTP, tools, signals.
 
 import { createRequire } from "node:module";
 import { statSync } from "node:fs";
+import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { CallTimeout, close, closeAll, configure, ensureBrowser, exitSync, get, limited, log, resetBrowser, run, searchLog, start } from "./browsers.mjs";
 import { open, text } from "./browse.mjs";
+import { checkProfileRoot } from "./profiles.mjs";
 import { search } from "./search.mjs";
 import { EDITIONS, googleNews } from "./google-news.mjs";
 
@@ -21,13 +24,19 @@ function fail(message) {
 }
 
 const env = process.env;
-for (const name of ["BROWSER_PORT", "BROWSER_BASE_PROFILE", "BROWSER_STATE_DIR", "BROWSER_MINIMAX_KEY"]) {
+for (const name of ["BROWSER_PORT", "BROWSER_BASE_PROFILE", "BROWSER_STATE_DIR", "BROWSER_PROFILE_ROOT", "BROWSER_MINIMAX_KEY"]) {
   if (!env[name]) fail(`${name} is required`);
 }
 const PORT = Number(env.BROWSER_PORT);
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) fail("BROWSER_PORT must be a TCP port number");
 if (!statSync(env.BROWSER_BASE_PROFILE, { throwIfNoEntry: false })?.isDirectory()) {
   fail(`BROWSER_BASE_PROFILE is not a directory: ${env.BROWSER_BASE_PROFILE}`);
+}
+// Before app.listen, so before configure() wipes the clones: a root that overlapped them would lose its profiles.
+try {
+  checkProfileRoot({ root: env.BROWSER_PROFILE_ROOT, baseProfile: env.BROWSER_BASE_PROFILE, clones: join(env.BROWSER_STATE_DIR, "profiles") });
+} catch (error) {
+  fail(error.message);
 }
 
 // Rewritten requests carry the MiniMax key: the test origin must stay on this machine.
@@ -111,13 +120,15 @@ function server() {
   const s = new McpServer({ name: "browser-mcp", version: VERSION });
   s.tool(
     "start",
-    `Start a browser of your own: a real, headed Chrome on a throwaway copy of the base profile. Returns its handle;
-pass it as \`browser\` to every other call. It ends on close, after 10 idle minutes, or when the service stops.
-At most 4 run at once: at the cap, start fails at once, so close one or try later.`,
-    {},
-    async () => {
+    `Start a browser of your own: a real, headed Chrome. Returns its handle; pass it as \`browser\` to every other call.
+Without \`profile\` it runs on a throwaway copy of the base profile. With \`profile\` (the name of a profile the operator
+made, e.g. a signed-in one) it runs on that profile itself, with its cookies and logins. While your browser is open no
+other browser can open that profile: start fails at once, naming the browser that holds it. Your browser ends on close, after 10
+idle minutes, or when the service stops. At most 4 run at once: at the cap, start fails at once, so close one or try later.`,
+    { profile: z.string().min(1).optional() },
+    async ({ profile }) => {
       try {
-        return reply({ browser: start() });
+        return reply({ browser: start({ profile }) });
       } catch (error) {
         return reply({ ok: false, error: error.message }, true);
       }
@@ -125,7 +136,7 @@ At most 4 run at once: at the cap, start fails at once, so close one or try late
   );
   s.tool(
     "close",
-    "Close your browser and delete its profile copy.",
+    "Close your browser. A throwaway profile copy is deleted; a named profile stays, with its cookies and logins, for the next start on it.",
     { browser: z.string().min(1) },
     async ({ browser }) => {
       try {
@@ -220,6 +231,7 @@ const http = app.listen(PORT, "127.0.0.1", (error) => {
   // every call limit to see one run over, and shorten the idle limit.
   configure({
     baseProfile: env.BROWSER_BASE_PROFILE,
+    profileRoot: env.BROWSER_PROFILE_ROOT,
     stateDir: env.BROWSER_STATE_DIR,
     proxy: env.BROWSER_TEST_PROXY,
     callLimitMs: TEST_LIMIT,

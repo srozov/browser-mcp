@@ -8,6 +8,7 @@ import { randomBytes } from "node:crypto";
 import { appendFileSync, cpSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "patchright";
+import { profilePath } from "./profiles.mjs";
 
 const MAX_BROWSERS = 4;
 const IDLE_MS = 10 * 60_000;
@@ -24,8 +25,8 @@ let config = null;
 const now = () => new Date().toISOString();
 
 /** Called once by the daemon. Clones and old logs left by a dead daemon are deleted here. */
-export function configure({ baseProfile, stateDir, proxy, callLimitMs, idleMs }) {
-  config = { baseProfile, profiles: join(stateDir, "profiles"), logs: join(stateDir, "logs"), proxy,
+export function configure({ baseProfile, profileRoot, stateDir, proxy, callLimitMs, idleMs }) {
+  config = { baseProfile, profileRoot, profiles: join(stateDir, "profiles"), logs: join(stateDir, "logs"), proxy,
     callLimitMs: callLimitMs ?? CALL_LIMIT_MS, idleMs: idleMs ?? IDLE_MS };
   // Every clone belongs to a dead daemon (one daemon per state directory). Its Chrome and Xvfb are
   // killed by systemd's control-group kill, not here.
@@ -55,19 +56,35 @@ export function searchLog(event) {
   appendFileSync(join(config.logs, `search-${ts.slice(0, 10)}.jsonl`), JSON.stringify({ ts, ...event }) + "\n");
 }
 
-/** A browser of one's own: a handle and a copy of the base profile. Chrome launches on the first call. */
-export function start() {
+/**
+ * A browser of one's own: a handle and, without a name, a copy of the base profile; with one, the named profile
+ * itself. A named browser holds its profile while it is in the table or in `closing`: there is no lock file.
+ * Chrome launches on the first call.
+ */
+export function start({ profile: name } = {}) {
+  const named = name === undefined ? null : profilePath(config.profileRoot, name);
+  if (named) {
+    // Never the full handle: a second caller must not get a working handle to another caller's browser.
+    const holder = [...table.values()].find((b) => b.named === name);
+    if (holder) {
+      throw new Error(`profile "${name}" is in use by browser ${holder.handle.slice(0, 6)}…: one browser per profile; ` +
+        `it is freed when that browser is closed or after ${config.idleMs / 60_000} idle minutes`);
+    }
+    // Out of the table, but its Chrome still holds Chrome's own lock until close() is done.
+    const ending = [...closing].find((b) => b.named === name);
+    if (ending) throw new Error(`profile "${name}" is being closed with browser ${ending.handle.slice(0, 6)}…: start again in a moment`);
+  }
   if (table.size >= MAX_BROWSERS) {
     throw new Error(`${table.size} browsers are running, at the cap of ${MAX_BROWSERS}: close one first`);
   }
   const handle = randomBytes(12).toString("base64url");
-  const profile = join(config.profiles, handle);
-  cpSync(config.baseProfile, profile, { recursive: true, filter: (src) => !/^Singleton/.test(src.split("/").pop()) });
-  const b = { handle, profile, log: join(config.logs, `${handle}.jsonl`), xvfb: null, context: null, starting: null,
+  const profile = named ?? join(config.profiles, handle);
+  if (!named) cpSync(config.baseProfile, profile, { recursive: true, filter: (src) => !/^Singleton/.test(src.split("/").pop()) });
+  const b = { handle, profile, named: named ? name : null, log: join(config.logs, `${handle}.jsonl`), xvfb: null, context: null, starting: null,
     retiring: Promise.resolve(), tabs: new Map(), current: null, front: null, tabCount: 0, lastGood: new WeakMap(),
     queue: Promise.resolve(), lastUsed: Date.now(), busy: 0, closed: false };
   table.set(handle, b);
-  log(b, { type: "registered" });
+  log(b, { type: "registered", ...(b.named ? { profile: b.named } : {}) });
   return handle;
 }
 
@@ -194,15 +211,19 @@ export async function close(handle, reason) {
   closing.add(b);
   b.closed = true;
   // A launch in flight ends its own Chrome once it sees `closed`; the clone is deleted only after, so Chrome
-  // does not write a fresh profile into a deleted directory.
-  await Promise.allSettled([b.starting]);
+  // does not write a fresh profile into a deleted directory. A named profile is never deleted. The hold on it
+  // (`closing`) ends on every path, a throw included.
   try {
-    await b.context?.close();
-  } catch {}
-  b.xvfb?.proc.kill("SIGTERM");
-  await Promise.race([b.retiring, new Promise((ok) => setTimeout(ok, RETIRE_MS).unref())]);
-  rmSync(b.profile, { recursive: true, force: true, maxRetries: 3 });
-  closing.delete(b);
+    await Promise.allSettled([b.starting]);
+    try {
+      await b.context?.close();
+    } catch {}
+    b.xvfb?.proc.kill("SIGTERM");
+    await Promise.race([b.retiring, new Promise((ok) => setTimeout(ok, RETIRE_MS).unref())]);
+    if (!b.named) rmSync(b.profile, { recursive: true, force: true, maxRetries: 3 });
+  } finally {
+    closing.delete(b);
+  }
   log(b, { type: "closed", reason });
 }
 
@@ -217,6 +238,6 @@ export function closeAll(reason) {
 export function exitSync() {
   for (const b of [...table.values(), ...closing]) {
     b.xvfb?.proc.kill("SIGTERM");
-    rmSync(b.profile, { recursive: true, force: true, maxRetries: 3 });
+    if (!b.named) rmSync(b.profile, { recursive: true, force: true, maxRetries: 3 });
   }
 }
