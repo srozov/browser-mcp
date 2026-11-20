@@ -364,6 +364,10 @@ test("after a crash, a new daemon opens the named profile", { timeout: 120_000 }
   const d = await daemon();
   mkdirSync(join(d.profileRoot, "crash"));
   const c = await client(d.url);
+  // A cookie written by a browser that closed cleanly: the crash must not lose what the profile already had.
+  const before = await start(c, { profile: "crash" });
+  await browse(c, before, { action: "open", url: `${ISSUER}/set-cookie?v=c1` });
+  await call(c, "close", { browser: before });
   const h = await start(c, { profile: "crash" });
   await browse(c, h, { action: "open", url: `${ISSUER}/reports` });
   d.proc.kill("SIGKILL");
@@ -379,8 +383,8 @@ test("after a crash, a new daemon opens the named profile", { timeout: 120_000 }
   const c2 = await client(d2.url);
   const h2 = await start(c2, { profile: "crash" });
   const shown = await browse(c2, h2, { action: "open", url: `${ISSUER}/show-cookie` });
-  // Not the cookie: Chrome flushes cookies lazily, so a SIGKILL may lose the last one. The profile itself opens.
   assert.equal(shown.error, false, shown.text);
+  assert.match(shown.text, /Cookie: visit=c1/);
   await call(c2, "close", { browser: h2 });
   assert.ok(existsSync(join(d.profileRoot, "crash")));
 });
