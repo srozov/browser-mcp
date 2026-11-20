@@ -275,16 +275,19 @@ test("an idle browser is closed and its profile copy deleted", { timeout: 120_00
   assert.deepEqual(ownProcesses(d.stateDir), []);
 });
 
-test("after SIGTERM no Chrome, Xvfb or profile copy is left", { timeout: 120_000 }, async () => {
+// On SIGINT patchright's own handler exits the process while the daemon's closes are still under way.
+for (const signal of ["SIGTERM", "SIGINT"]) test(`after ${signal} no Chrome, Xvfb or profile copy is left`, { timeout: 120_000 }, async () => {
   const d = await daemon();
   const c = await client(d.url);
-  for (const url of [`${ISSUER}/reports`, `${ISSUER}/investors`]) {
+  for (const url of [`${ISSUER}/reports`, `${ISSUER}/investors`, `${ISSUER}/presentations`]) {
     const b = await start(c);
     assert.equal((await browse(c, b, { action: "open", url })).error, false);
   }
   assert.ok(ownProcesses(d.stateDir).length > 0);
-  d.proc.kill("SIGTERM");
+  d.proc.kill(signal);
   await d.exited;
+  // The exit hook only signals each Xvfb: give them a moment to go.
+  for (let i = 0; i < 30 && ownProcesses(d.stateDir).length; i++) await new Promise((ok) => setTimeout(ok, 100));
   assert.deepEqual(ownProcesses(d.stateDir), []);
   assert.deepEqual(readdirSync(join(d.stateDir, "profiles")), []);
 });

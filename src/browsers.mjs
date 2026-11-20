@@ -18,6 +18,7 @@ const LOG_KEEP_MS = 30 * 24 * 3_600_000;
 const RETIRE_MS = 15_000;
 
 const table = new Map(); // handle -> entry
+const closing = new Set(); // entries out of the table whose Xvfb and clone are not gone yet
 let config = null;
 
 const now = () => new Date().toISOString();
@@ -184,6 +185,7 @@ export function limited(name, fn, onTimeout) {
 export async function close(handle, reason) {
   const b = get(handle);
   table.delete(handle);
+  closing.add(b);
   b.closed = true;
   // A launch in flight ends its own Chrome once it sees `closed`; the clone is deleted only after, so Chrome
   // does not write a fresh profile into a deleted directory.
@@ -194,6 +196,7 @@ export async function close(handle, reason) {
   b.xvfb?.proc.kill("SIGTERM");
   await Promise.race([b.retiring, new Promise((ok) => setTimeout(ok, RETIRE_MS).unref())]);
   rmSync(b.profile, { recursive: true, force: true, maxRetries: 3 });
+  closing.delete(b);
   log(b, { type: "closed", reason });
 }
 
@@ -201,9 +204,12 @@ export function closeAll(reason) {
   return Promise.allSettled([...table.keys()].map((handle) => close(handle, reason)));
 }
 
-/** For the process's exit hook, whatever path ends it: no await, no Chrome of its own is waited for. */
+/**
+ * For the process's exit hook, whatever path ends it: no await, no Chrome of its own is waited for. It covers
+ * the entries a close is still ending too: on SIGINT the process exits while closeAll is under way.
+ */
 export function exitSync() {
-  for (const b of table.values()) {
+  for (const b of [...table.values(), ...closing]) {
     b.xvfb?.proc.kill("SIGTERM");
     rmSync(b.profile, { recursive: true, force: true, maxRetries: 3 });
   }
