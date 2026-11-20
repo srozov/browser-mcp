@@ -42,8 +42,8 @@ reading a news article"), never by the private project it came from.
      `news_search` on a query and a recent day range, with no `start`;
   5. stop the daemon with Ctrl-C;
   6. check that `pgrep -f <state dir>` prints nothing, no Xvfb of its own is left, `<state dir>/profiles` is
-     empty, `pgrep -f <profile root>` prints nothing, and `<profile root>/a` is still there; `ss -ltn` shows no listener of the daemon's left (its port and its
-     browsers' proxies).
+     empty, `pgrep -f <profile root>` prints nothing, and `<profile root>/a` is still there; `ss -ltn` shows no
+     listener of the daemon's left (its port and its browsers' proxies).
 
   When the daemon changes, the change updates this section with it.
 
