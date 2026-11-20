@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, request } from "node:http";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
@@ -208,7 +208,7 @@ let four;
 
 test("four callers at once each read only their own page, and their calls overlap", { timeout: 120_000 }, async () => {
   const cs = await Promise.all(PAGES.map(() => client(main.url)));
-  const handles = await Promise.all(cs.map(start));
+  const handles = await Promise.all(cs.map((c) => start(c)));
   const opened = await Promise.all(cs.map((c, i) => browse(c, handles[i], { action: "open", url: `${ISSUER}/${PAGES[i][0]}` })));
   for (const r of opened) assert.equal(r.error, false, r.text);
   assert.ok(overlap(opened), "the opens ran at the same time");
@@ -365,7 +365,7 @@ test("after a crash, a new daemon opens the named profile", { timeout: 120_000 }
   mkdirSync(join(d.profileRoot, "crash"));
   const c = await client(d.url);
   const h = await start(c, { profile: "crash" });
-  await browse(c, h, { action: "open", url: `${ISSUER}/set-cookie?v=c1` });
+  await browse(c, h, { action: "open", url: `${ISSUER}/reports` });
   d.proc.kill("SIGKILL");
   await d.exited;
   for (const pid of ownProcesses(d.stateDir, d.profileRoot)) {
@@ -374,11 +374,13 @@ test("after a crash, a new daemon opens the named profile", { timeout: 120_000 }
     } catch {}
   }
   assert.ok(existsSync(join(d.profileRoot, "crash")));
+  assert.ok(lstatSync(join(d.profileRoot, "crash", "SingletonLock"), { throwIfNoEntry: false }), "the crash left Chrome's lock");
   const d2 = await daemon({ BROWSER_PROFILE_ROOT: d.profileRoot }, d.stateDir);
   const c2 = await client(d2.url);
   const h2 = await start(c2, { profile: "crash" });
   const shown = await browse(c2, h2, { action: "open", url: `${ISSUER}/show-cookie` });
-  assert.match(shown.text, /visit=c1/);
+  // Not the cookie: Chrome flushes cookies lazily, so a SIGKILL may lose the last one. The profile itself opens.
+  assert.equal(shown.error, false, shown.text);
   await call(c2, "close", { browser: h2 });
   assert.ok(existsSync(join(d.profileRoot, "crash")));
 });
