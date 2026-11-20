@@ -23,6 +23,7 @@ export async function startProxy({ lookup, upstream, onRefused }) {
   // Its own agent: a kept-alive socket in Node's shared one would carry other browsers' requests too, and this
   // proxy's close would cut them. close() destroys every socket this agent holds.
   const agent = new http.Agent({ keepAlive: true });
+  let closed = false; // a request whose lookup ends after close() goes nowhere
   const track = (socket) => {
     sockets.add(socket);
     socket.once("close", () => sockets.delete(socket));
@@ -42,6 +43,7 @@ export async function startProxy({ lookup, upstream, onRefused }) {
       // One lookup per request: the address checked is the address connected to.
       const reason = reject(req.url);
       const target = reason ? { reason } : await resolveHost(new URL(req.url).hostname, lookup);
+      if (closed) return void res.destroy();
       if (target.reason) {
         onRefused({ url: req.url, reason: target.reason, address: target.address });
         const body = `${req.url} is blocked (${target.reason})`;
@@ -82,6 +84,7 @@ export async function startProxy({ lookup, upstream, onRefused }) {
       const target = splitAuthority(req.url);
       if (!target) return void socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
       const refusal = isPrivateHost(target.host) ? { reason: "private_host" } : await resolveHost(target.host, lookup);
+      if (closed) return void socket.destroy();
       if (refusal.reason) return forbid(socket, req.url, refusal);
       const peer = track(net.connect(up ? { host: up.hostname, port: Number(up.port) } : { host: refusal.address, port: target.port }));
       socket.on("close", () => peer.destroy());
@@ -127,6 +130,7 @@ export async function startProxy({ lookup, upstream, onRefused }) {
   return {
     port: server.address().port,
     close: () => new Promise((ok) => {
+      closed = true;
       server.close(ok);
       agent.destroy();
       for (const socket of sockets) socket.destroy();

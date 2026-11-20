@@ -91,6 +91,27 @@ test("closing one browser's proxy leaves another proxy's requests alone", async 
   upstream.close();
 });
 
+test("a request still being looked up when the proxy closes never leaves", async () => {
+  const hits = [];
+  const upstream = createServer((req, res) => { hits.push(req.url); res.end("ok"); });
+  upstream.on("connect", (req, socket) => { hits.push(req.url); socket.destroy(); });
+  let release;
+  const answered = new Promise((ok) => { release = ok; });
+  const lookup = async () => { await answered; return [{ address: "203.0.113.10", family: 4 }]; };
+  const proxy = await startProxy({ lookup, upstream: `http://127.0.0.1:${await listen(upstream)}`, onRefused: () => {} });
+  const plain = via(proxy.port, "http://site.example/x");
+  const tunnel = request({ host: "127.0.0.1", port: proxy.port, method: "CONNECT", path: "site.example:443" });
+  tunnel.on("error", () => {});
+  tunnel.end();
+  await new Promise((ok) => setTimeout(ok, 100));
+  await proxy.close();
+  release();
+  await plain.done;
+  await new Promise((ok) => setTimeout(ok, 200));
+  assert.deepEqual(hits, []);
+  upstream.close();
+});
+
 test("a site's own x-source-policy header is not passed on", async () => {
   const upstream = createServer((req, res) => res.writeHead(200, { "x-source-policy": "private_host" }).end("ok"));
   const lookup = async () => [{ address: "203.0.113.10", family: 4 }];
