@@ -238,6 +238,7 @@ export async function startFixtureSite(port = 0) {
       return res.writeHead(200, { "content-type": "text/html" }).end(
         `<html><head><title>Cookie</title></head><body><main><p>Cookie: ${req.headers.cookie || "none"}</p></main></body></html>`);
     }
+    if (key === "ir.issuer.test/redirect-tls") return res.writeHead(302, { location: "https://10.9.9.9/secret" }).end();
     if (key === "ir.issuer.test/redirect-loopback") return res.writeHead(302, { location: "http://127.0.0.1:8081/landing" }).end();
     if (key === "ir.issuer.test/redirect-out") return res.writeHead(302, { location: "http://evil.test/landing" }).end();
     if (key === "cdn.shared.test/space1/moved.pdf") return res.writeHead(302, { location: "http://10.9.9.9/stolen.pdf" }).end();

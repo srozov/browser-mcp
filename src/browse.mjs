@@ -78,23 +78,27 @@ export async function open(b, url) {
   const document = p.waitForResponse((r) => r.request().isNavigationRequest() && r.frame() === p.mainFrame() &&
     isDocumentType(r.headers()["content-type"]), { timeout: NAV_TIMEOUT_MS }).catch(() => null);
   let download = false;
+  let blocked = null;
   const response = await Promise.race([document, p.goto(url, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS }).catch((e) => {
     if (String(e).includes("Download is starting")) {
       download = true;
       return null;
     }
-    // A refused https hop or a refused WebSocket-less tunnel fails the navigation: say what the proxy refused.
+    // An https hop the proxy refused fails the navigation as a tunnel failure: say what it refused.
     const refused = b.lastRefusal;
-    if (String(e).includes("ERR_TUNNEL_CONNECTION_FAILED") && refused && refused.at >= started) {
-      throw new Error(`${refused.url} is blocked (${refused.reason}${refused.address ? ` ${refused.address}` : ""})`);
+    if (String(e).includes("ERR_TUNNEL_CONNECTION_FAILED") && refused?.via === "connection" && refused.at >= started) {
+      blocked = `${refused.url} is blocked (${refused.reason}${refused.address ? ` ${refused.address}` : ""})`;
+      return null;
     }
     throw e;
   })]);
+  // A plain-http hop the proxy refused is its 403, marked with the reason.
   const policy = response?.headers()["x-source-policy"];
-  if (policy) {
+  if (policy) blocked = `${response.url()} is blocked (${policy})`;
+  if (blocked) {
     const previous = b.lastGood.get(p);
     await p.goto(previous ?? "about:blank", { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS }).catch(() => {});
-    throw new Error(`${response.url()} is blocked (${policy})${previous ? `; the tab is back on ${previous}` : ""}`);
+    throw new Error(`${blocked}${previous ? `; the tab is back on ${previous}` : ""}`);
   }
   if (download || (response && isDocumentType(response.headers()["content-type"]))) {
     const previous = b.lastGood.get(p);

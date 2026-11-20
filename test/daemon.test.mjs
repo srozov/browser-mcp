@@ -238,6 +238,11 @@ test("a redirect to a public host is followed; to a private or loopback host the
   const loop = await browse(c, b, { action: "open", url: `${ISSUER}/redirect-loopback` });
   assert.equal(loop.error, true);
   assert.match(loop.text, /http:\/\/127\.0\.0\.1:8081\/landing is blocked \(private_host\)/);
+  assert.match(loop.text, /the tab is back on http:\/\/ir\.issuer\.test\/reports/);
+  const tls = await browse(c, b, { action: "open", url: `${ISSUER}/redirect-tls` });
+  assert.equal(tls.error, true);
+  assert.match(tls.text, /10\.9\.9\.9:443 is blocked \(private_host\); the tab is back on http:\/\/ir\.issuer\.test\/reports/);
+  assert.ok(events(main.stateDir, b).some((e) => e.type === "rejected" && e.via === "connection" && e.url === "10.9.9.9:443"));
   assert.deepEqual(leaked(["10.9.9.9", "127.0.0.1"]), []);
   assert.match((await browse(c, b, { action: "text" })).text, /Report archive/, "the tab is still on the page it was on");
   await call(c, "close", { browser: b });
