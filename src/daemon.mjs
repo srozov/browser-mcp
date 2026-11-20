@@ -101,7 +101,11 @@ async function searchTool(name, args, fn) {
   }
 }
 
-const DAY = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+// A calendar day: "2026-13-01" would throw a bare "Invalid time value", and "2026-02-30" would silently become 2 March.
+const DAY = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(
+  (d) => !Number.isNaN(Date.parse(`${d}T00:00:00Z`)) && new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) === d,
+  "not a calendar day (YYYY-MM-DD)",
+);
 
 function server() {
   const s = new McpServer({ name: "browser-mcp", version: VERSION });
@@ -178,7 +182,10 @@ where Google's link did not decode, and the note says why: then find the outlet'
 outlets are listed too. A headline is never evidence and is not the page: open or acquire the page before you say
 what it says. Needs no browser. Each call has a ${SEARCH_LIMIT_MS.news_search / 1000} s limit.`,
     { query: z.string().min(2), from: DAY, to: DAY, edition: z.enum(Object.keys(EDITIONS)).optional() },
-    async (args) => searchTool("news_search", args, (f) => googleNews(f, { ...args, edition: args.edition ?? "US" })),
+    async (args) => searchTool("news_search", args, (f) => {
+      if (args.from > args.to) throw new Error(`from ${args.from} is after to ${args.to}`);
+      return googleNews(f, { ...args, edition: args.edition ?? "US" });
+    }),
   );
   return s;
 }

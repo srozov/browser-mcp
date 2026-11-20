@@ -1,5 +1,6 @@
 // End-to-end tests of the browser daemon over Streamable HTTP MCP, with a local forward proxy that plays the
-// internet (an issuer site, a shared document CDN, third parties). Network-free; needs Chrome and Xvfb.
+// internet (an issuer site, a shared document CDN, third parties), and a local recorder that plays the search
+// services. Network-free; needs Chrome and Xvfb.
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -399,6 +400,18 @@ test("news_search returns the range's decoded headlines without a browser", asyn
   assert.ok(news.length > 2 && news.every((e) => e.headers.cookie === "SOCS=CAI"));
 });
 
+test("news_search refuses a day that is not on the calendar, and a range that ends before it starts", async () => {
+  const { c } = await searcher();
+  const before = recorder.seen.length;
+  const bad = await searched(c, "news_search", { query: "Example Widgets AG", from: "2026-02-30", to: "2026-03-01" });
+  assert.equal(bad.error, true);
+  assert.match(bad.text, /not a calendar day/);
+  const reversed = await searched(c, "news_search", { query: "Example Widgets AG", from: "2026-11-18", to: "2026-11-13" });
+  assert.equal(reversed.error, true);
+  assert.match(reversed.text, /from 2026-11-18 is after to 2026-11-13/);
+  assert.equal(recorder.seen.length, before, "nothing was asked of Google");
+});
+
 test("neither search needs a start or a handle", async () => {
   const { d, c } = await searcher();
   assert.equal((await searched(c, "search", { query: "Example Widgets" })).error, false);
@@ -452,6 +465,7 @@ test("a test search origin off this machine is refused at start", async () => {
 });
 
 test("the key is in no reply and no log line", async () => {
+  for (const d of searchDaemons) assert.equal(d.proc.exitCode, null, "a search daemon is still running");
   for (const text of searchReplies) assert.ok(!text.includes(KEY));
   for (const d of [main, ...searchDaemons]) {
     assert.ok(!d.stderr.includes(KEY));
