@@ -4,8 +4,6 @@ A local browser service for agents. One daemon on `127.0.0.1` speaks MCP over St
 headed Chrome (patchright, on its own Xvfb display) for every caller. A caller calls `start`, gets a handle, and
 passes it to every other call, so concurrent agents never see, lose or wait for each other's pages.
 
-**Not for use yet:** until the source policy lands, browsers can reach local hosts.
-
 ## Prerequisites
 
 Node 24, Google Chrome and Xvfb.
@@ -83,10 +81,19 @@ Tools:
 Neither search needs `start`. A search result is never evidence: open the page itself. Search calls are logged to
 `logs/search-YYYY-MM-DD.jsonl`.
 
+## Source policy
+
+Browsers open public http(s) sites only. Local, private, loopback and link-local hosts are refused, by name and by
+the addresses a name resolves to; so are non-http schemes and credentials in a URL. Every request, redirect hop and
+WebSocket goes through a policy proxy of the browser's own, which connects to the address it checked; WebRTC is
+limited to that proxy. A refusal is a `rejected` line in the browser's audit log, and `open` fails with
+`<url> is blocked (<reason>)`.
+
 A browser also ends after 10 idle minutes and when the daemon stops. An unknown handle fails with a message
 saying so.
 
 ## Test
 
 `scripts/verify` installs from the lock file, checks every module parses and runs the tests, which use a local
-fixture site as the browsers' proxy.
+fixture site as the policy proxy's upstream. `BROWSER_TEST_HOSTS` (tests only; JSON `{name: [addresses]}`) replaces
+DNS and needs `BROWSER_TEST_PROXY`.

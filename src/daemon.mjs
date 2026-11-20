@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // The browser daemon: one service on 127.0.0.1 speaking MCP over Streamable HTTP, with a headed Chrome of its
-// own per caller, addressed by a handle. The launch, time limits, audit log and open/text are moved from the
-// page readers' browser server (browsers.mjs, browse.mjs); the web and news searches are moved too (search.mjs,
-// google-news.mjs) and need no browser. The profile root variable is moved from the same server; profiles.mjs is
-// new. This file is the wiring: environment, HTTP, tools, signals.
+// own per caller, addressed by a handle. The source policy (policy.mjs, moved) and the proxy that enforces it
+// per browser (proxy.mjs, new) keep every browser off local and private hosts. The launch, time limits, audit
+// log and open/text are moved from the page readers' browser server (browsers.mjs, browse.mjs); the web and news
+// searches are moved too (search.mjs, google-news.mjs) and need no browser. The profile root variable is moved
+// from the same server; profiles.mjs is new. This file is the wiring: environment, HTTP, tools, signals.
 
 import { createRequire } from "node:module";
 import { statSync } from "node:fs";
@@ -14,6 +15,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 import { CallTimeout, close, closeAll, configure, ensureBrowser, exitSync, get, limited, log, resetBrowser, run, searchLog, start } from "./browsers.mjs";
 import { open, text } from "./browse.mjs";
+import { testLookup } from "./policy.mjs";
 import { checkProfileRoot } from "./profiles.mjs";
 import { search } from "./search.mjs";
 import { EDITIONS, googleNews } from "./google-news.mjs";
@@ -42,6 +44,18 @@ try {
 // Rewritten requests carry the MiniMax key: the test origin must stay on this machine.
 if (env.BROWSER_TEST_SEARCH_ORIGIN && !/^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(env.BROWSER_TEST_SEARCH_ORIGIN)) {
   fail("BROWSER_TEST_SEARCH_ORIGIN must be http://127.0.0.1:<port>: requests sent there carry the MiniMax key");
+}
+
+// Offline tests only: a map that replaces DNS. Without the fixture proxy, Chrome would use real DNS while the
+// policy read the map, so a mapped name could make a private host look public.
+let lookup;
+if (env.BROWSER_TEST_HOSTS) {
+  if (!env.BROWSER_TEST_PROXY) fail("BROWSER_TEST_HOSTS needs BROWSER_TEST_PROXY: without the fixture proxy the map would weaken the source policy");
+  try {
+    lookup = testLookup(env.BROWSER_TEST_HOSTS);
+  } catch (error) {
+    fail(error.message);
+  }
 }
 
 const VERSION = createRequire(import.meta.url)("../package.json").version;
@@ -152,6 +166,7 @@ idle minutes, or when the service stops. At most 4 run at once: at the cap, star
     `Browse the web in a real browser: the one \`start\` gave you.
 Each call has a 120 s limit: a call that runs over it fails and the browser restarts (your cookies stay).
 Documents (PDF, spreadsheets) are not read here.
+Local, private and non-http addresses are refused: open fails with \`<url> is blocked (<reason>)\`.
 Actions:
 - open {url}: open a web page.
 - text {page?}: the page's visible text, in pages of 6000 characters.`,
@@ -227,13 +242,14 @@ app.delete("/mcp", notAllowed);
 // listen error too.
 const http = app.listen(PORT, "127.0.0.1", (error) => {
   if (error) fail(`cannot listen on 127.0.0.1:${PORT}: ${error.message}`);
-  // Offline tests only: route every browser through a local fixture proxy that plays the internet, shorten
-  // every call limit to see one run over, and shorten the idle limit.
+  // Offline tests only: the fixture proxy that plays the internet is the policy proxy's upstream, the host map
+  // replaces DNS, every call limit is shortened to see one run over, and so is the idle limit.
   configure({
     baseProfile: env.BROWSER_BASE_PROFILE,
     profileRoot: env.BROWSER_PROFILE_ROOT,
     stateDir: env.BROWSER_STATE_DIR,
     proxy: env.BROWSER_TEST_PROXY,
+    lookup,
     callLimitMs: TEST_LIMIT,
     idleMs: Number(env.BROWSER_TEST_IDLE_MS) || undefined,
   });

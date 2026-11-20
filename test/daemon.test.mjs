@@ -7,13 +7,13 @@ import { spawn } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, request } from "node:http";
 import { randomBytes } from "node:crypto";
-import { createServer } from "node:net";
+import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, before, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { startFixtureSite } from "./fixture-site.mjs";
+import { TEST_HOSTS, startFixtureSite } from "./fixture-site.mjs";
 
 const DAEMON = resolve(import.meta.dirname, "../src/daemon.mjs");
 const LIMIT_MS = 20_000;
@@ -46,7 +46,7 @@ async function daemon(env = {}, stateDir = mkdtempSync(join(root, "state-"))) {
   const port = await freePort();
   const proc = spawn(process.execPath, [DAEMON], { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env,
     BROWSER_PORT: String(port), BROWSER_BASE_PROFILE: join(root, "base"), BROWSER_STATE_DIR: stateDir,
-    BROWSER_PROFILE_ROOT: profileRoot, BROWSER_MINIMAX_KEY: KEY, BROWSER_TEST_SEARCH_ORIGIN: recorder.url, BROWSER_TEST_PROXY: site.url, BROWSER_TEST_CALL_LIMIT_MS: String(LIMIT_MS), ...env } });
+    BROWSER_PROFILE_ROOT: profileRoot, BROWSER_MINIMAX_KEY: KEY, BROWSER_TEST_SEARCH_ORIGIN: recorder.url, BROWSER_TEST_PROXY: site.url, BROWSER_TEST_HOSTS: JSON.stringify(TEST_HOSTS), BROWSER_TEST_CALL_LIMIT_MS: String(LIMIT_MS), ...env } });
   const d = { proc, port, stateDir, profileRoot, url: `http://127.0.0.1:${port}/mcp`, stderr: "",
     exited: new Promise((ok) => proc.once("exit", ok)) };
   daemons.push(d);
@@ -117,6 +117,13 @@ async function start(c, args = {}) {
 
 const browse = (c, browser, args) => call(c, "browse", { browser, ...args });
 const events = (stateDir, handle) => readFileSync(join(stateDir, "logs", `${handle}.jsonl`), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+const leaked = (prefixes) => hits.filter((h) => prefixes.some((p) => h.startsWith(p)));
+const proxyPort = (stateDir, handle) => events(stateDir, handle).filter((e) => e.type === "browser_started").at(-1).proxy_port;
+const listening = (port) => new Promise((ok) => {
+  const socket = connect(port, "127.0.0.1");
+  socket.once("connect", () => { socket.destroy(); ok(true); });
+  socket.once("error", () => ok(false));
+});
 const alive = (pid) => {
   try {
     process.kill(pid, 0);
@@ -170,12 +177,128 @@ test("a page opens with its third-party content; open needs a url", async () => 
   assert.match(r.text, /Issuer results text/);
   assert.ok(hits.includes("widget.thirdparty.test/quote"), "the widget frame loads");
   assert.ok(hits.includes("api.thirdparty.test/quote"), "the third-party API loads");
+  assert.deepEqual(leaked(["10.9.9.9"]), [], "nothing reached the private host");
+  assert.ok(events(main.stateDir, b).some((e) => e.type === "rejected" && e.via === "fetch" && e.url === "http://10.9.9.9/data" && e.reason === "private_host"));
   const none = await browse(c, b, { action: "open" });
   assert.equal(none.error, true);
   assert.match(none.text, /open needs url/);
   const misplaced = await browse(c, b, { action: "text", url: `${ISSUER}/reports` });
   assert.match(misplaced.text, /text takes page, not url: open the url first/);
   await call(c, "close", { browser: b });
+});
+
+test("open refuses local, private, non-http and credentialed targets before navigating", async () => {
+  const c = await client(main.url);
+  const b = await start(c);
+  const before = hits.length;
+  for (const url of [`http://127.0.0.1:${main.port}/mcp`, "http://localhost/", "file:///etc/passwd", "http://10.9.9.9/x",
+    "http://[::ffff:127.0.0.1]/", "https://user:pw@ir.issuer.test/"]) {
+    const r = await browse(c, b, { action: "open", url });
+    assert.equal(r.error, true, url);
+    assert.match(r.text, /is blocked \((private_host|scheme|credentials_in_url)\)/, url);
+    assert.ok(events(main.stateDir, b).some((e) => e.type === "rejected" && e.via === "open" && e.url === url), url);
+  }
+  assert.equal(hits.length, before, "no request left the browser");
+  const ok = await browse(c, b, { action: "open", url: "http://portal.thirdparty.test/issuer" });
+  assert.match(ok.text, /PORTAL FIGURES/);
+  await call(c, "close", { browser: b });
+});
+
+test("a public name that resolves to a private address, or not at all, is refused for open and for a page's requests", async () => {
+  const c = await client(main.url);
+  const b = await start(c);
+  for (const [host, pattern] of [["rebind.test", "resolves_private 127.0.0.1"], ["inside.test", "resolves_private 10.9.9.9"], ["nowhere.test", "unresolved"]]) {
+    const r = await browse(c, b, { action: "open", url: `http://${host}/` });
+    assert.equal(r.error, true, host);
+    assert.match(r.text, new RegExp(`http://${host}/ is blocked \\(${pattern.replaceAll(".", "\\.")}\\)`), host);
+  }
+  const page = await browse(c, b, { action: "open", url: `${ISSUER}/policy` });
+  assert.equal(page.error, false, page.text);
+  assert.match(page.text, /POLICY PAGE/);
+  const log = events(main.stateDir, b);
+  const has = (url, reason, address) => log.some((e) => e.type === "rejected" && e.via === "fetch" && e.url === url && e.reason === reason && e.address === address);
+  assert.ok(has("http://rebind.test/data", "resolves_private", "127.0.0.1"));
+  assert.ok(has("http://inside.test/data", "resolves_private", "10.9.9.9"));
+  assert.ok(has("http://nowhere.test/data", "unresolved", undefined));
+  assert.deepEqual(leaked(["rebind.test", "inside.test", "nowhere.test"]), []);
+  await call(c, "close", { browser: b });
+});
+
+test("a redirect to a public host is followed; to a private or loopback host the proxy refuses it", async () => {
+  const c = await client(main.url);
+  const b = await start(c);
+  const followed = await browse(c, b, { action: "open", url: `${ISSUER}/redirect-out` });
+  assert.equal(followed.error, false, followed.text);
+  assert.match(followed.text, /EVIL LANDING/);
+  await browse(c, b, { action: "open", url: `${ISSUER}/reports` });
+  const moved = await browse(c, b, { action: "open", url: "http://cdn.shared.test/space1/moved.pdf" });
+  assert.equal(moved.error, true);
+  assert.match(moved.text, /http:\/\/10\.9\.9\.9\/stolen\.pdf is blocked \(private_host\)/);
+  assert.ok(events(main.stateDir, b).some((e) => e.type === "rejected" && e.via === "connection" && e.url === "http://10.9.9.9/stolen.pdf" && e.reason === "private_host"));
+  const loop = await browse(c, b, { action: "open", url: `${ISSUER}/redirect-loopback` });
+  assert.equal(loop.error, true);
+  assert.match(loop.text, /http:\/\/127\.0\.0\.1:8081\/landing is blocked \(private_host\)/);
+  assert.deepEqual(leaked(["10.9.9.9", "127.0.0.1"]), []);
+  assert.match((await browse(c, b, { action: "text" })).text, /Report archive/, "the tab is still on the page it was on");
+  await call(c, "close", { browser: b });
+});
+
+test("a WebSocket to a public host works; to a private host or a name resolving private it is refused", async () => {
+  const c = await client(main.url);
+  const b = await start(c);
+  const r = await browse(c, b, { action: "open", url: `${ISSUER}/sockets` });
+  assert.equal(r.error, false, r.text);
+  let t = "";
+  for (let i = 0; i < 30 && !/WS rebind\.test ERROR/.test(t); i++) {
+    await new Promise((ok) => setTimeout(ok, 300));
+    t = (await browse(c, b, { action: "text" })).text;
+  }
+  assert.match(t, /WS ws\.thirdparty\.test MESSAGE WS OK/);
+  assert.match(t, /WS 10\.9\.9\.9 ERROR/);
+  assert.match(t, /WS rebind\.test ERROR/);
+  const log = events(main.stateDir, b);
+  assert.ok(log.some((e) => e.type === "rejected" && e.via === "connection" && e.url === "10.9.9.9:80" && e.reason === "private_host"));
+  assert.ok(log.some((e) => e.type === "rejected" && e.via === "connection" && e.url === "rebind.test:80" && e.reason === "resolves_private" && e.address === "127.0.0.1"));
+  assert.ok(hits.includes("ws.thirdparty.test/feed"));
+  assert.deepEqual(leaked(["10.9.9.9", "rebind.test"]), []);
+  await call(c, "close", { browser: b });
+});
+
+test("Chrome runs with the policy proxy and the WebRTC flag; the proxy outlives a reset and ends with close", { timeout: 120_000 }, async () => {
+  const c = await client(main.url);
+  const b = await start(c);
+  await browse(c, b, { action: "open", url: `${ISSUER}/reports` });
+  const port = proxyPort(main.stateDir, b);
+  assert.ok(await listening(port));
+  const chrome = readdirSync("/proc").filter((n) => /^\d+$/.test(n)).map((pid) => {
+    try {
+      return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+    } catch {
+      return [];
+    }
+  }).find((args) => args.some((a) => a.includes(join(main.stateDir, "profiles", b))));
+  assert.ok(chrome, "found Chrome by its profile");
+  assert.ok(chrome.includes("--force-webrtc-ip-handling-policy=disable_non_proxied_udp"));
+  assert.ok(chrome.includes(`--proxy-server=http://127.0.0.1:${port}`));
+  await browse(c, b, { action: "open", url: `${ISSUER}/hang` });
+  const again = await browse(c, b, { action: "open", url: `${ISSUER}/reports` });
+  assert.equal(again.error, false, again.text);
+  assert.equal(proxyPort(main.stateDir, b), port, "the relaunched Chrome reuses the proxy");
+  assert.equal(events(main.stateDir, b).filter((e) => e.type === "browser_started").length, 2);
+  await call(c, "close", { browser: b });
+  assert.equal(await listening(port), false);
+});
+
+test("a daemon that stops takes its browsers' proxies with it", { timeout: 120_000 }, async () => {
+  const d = await daemon();
+  const c = await client(d.url);
+  const b = await start(c);
+  await browse(c, b, { action: "open", url: `${ISSUER}/reports` });
+  const port = proxyPort(d.stateDir, b);
+  assert.ok(await listening(port));
+  d.proc.kill("SIGTERM");
+  await d.exited;
+  assert.equal(await listening(port), false);
 });
 
 test("a document is not a page: the tab goes back and the next read still works", async () => {
@@ -575,6 +698,17 @@ test("a test search origin off this machine is refused at start", async () => {
   assert.equal(r.code, 1);
   assert.match(r.stderr, /BROWSER_TEST_SEARCH_ORIGIN/);
   assert.doesNotMatch(r.stderr, /listening on/);
+});
+
+test("the host map without the fixture proxy, or malformed, is refused at start", async () => {
+  const none = await spawnRaw({ BROWSER_MINIMAX_KEY: KEY, BROWSER_TEST_HOSTS: JSON.stringify(TEST_HOSTS) });
+  assert.equal(none.code, 1);
+  assert.match(none.stderr, /BROWSER_TEST_HOSTS needs BROWSER_TEST_PROXY/);
+  assert.doesNotMatch(none.stderr, /listening on/);
+  const bad = await spawnRaw({ BROWSER_MINIMAX_KEY: KEY, BROWSER_TEST_PROXY: site.url, BROWSER_TEST_HOSTS: '{"a.test": ["not-an-ip"]}' });
+  assert.equal(bad.code, 1);
+  assert.match(bad.stderr, /BROWSER_TEST_HOSTS must be JSON/);
+  assert.doesNotMatch(bad.stderr, /listening on/);
 });
 
 test("the key is in no reply and no log line", async () => {
