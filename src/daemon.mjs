@@ -27,15 +27,6 @@ if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) fail("BROWSER_PORT must
 if (!statSync(env.BROWSER_BASE_PROFILE, { throwIfNoEntry: false })?.isDirectory()) {
   fail(`BROWSER_BASE_PROFILE is not a directory: ${env.BROWSER_BASE_PROFILE}`);
 }
-// Offline tests only: route every browser through a local fixture proxy that plays the internet, shorten
-// every call limit to see one run over, and shorten the idle limit.
-configure({
-  baseProfile: env.BROWSER_BASE_PROFILE,
-  stateDir: env.BROWSER_STATE_DIR,
-  proxy: env.BROWSER_TEST_PROXY,
-  callLimitMs: Number(env.BROWSER_TEST_CALL_LIMIT_MS) || undefined,
-  idleMs: Number(env.BROWSER_TEST_IDLE_MS) || undefined,
-});
 
 const VERSION = createRequire(import.meta.url)("../package.json").version;
 
@@ -159,10 +150,22 @@ const notAllowed = (req, res) => res.status(405).json({ jsonrpc: "2.0", error: {
 app.get("/mcp", notAllowed);
 app.delete("/mcp", notAllowed);
 
-const http = app.listen(PORT, "127.0.0.1", () => {
+// The startup cleanup runs only once the port is ours: a second daemon started by mistake on the same
+// environment fails here without deleting the running one's profile copies. Express 5 calls back with a
+// listen error too.
+const http = app.listen(PORT, "127.0.0.1", (error) => {
+  if (error) fail(`cannot listen on 127.0.0.1:${PORT}: ${error.message}`);
+  // Offline tests only: route every browser through a local fixture proxy that plays the internet, shorten
+  // every call limit to see one run over, and shorten the idle limit.
+  configure({
+    baseProfile: env.BROWSER_BASE_PROFILE,
+    stateDir: env.BROWSER_STATE_DIR,
+    proxy: env.BROWSER_TEST_PROXY,
+    callLimitMs: Number(env.BROWSER_TEST_CALL_LIMIT_MS) || undefined,
+    idleMs: Number(env.BROWSER_TEST_IDLE_MS) || undefined,
+  });
   process.stderr.write(`browser-mcp listening on http://127.0.0.1:${PORT}/mcp\n`);
 });
-http.on("error", (error) => fail(`cannot listen on 127.0.0.1:${PORT}: ${error.message}`));
 
 // Every browser's display and profile copy go with the daemon however the process ends: on SIGINT, patchright's own
 // handler closes Chrome and exits (130) before an async cleanup is done.
