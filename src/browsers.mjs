@@ -1,0 +1,216 @@
+// The browser table: one headed Chrome per handle, each with its own Xvfb display, its own copy of the base
+// profile, its own tabs and its own call queue. The launch, reset, cleanup, time limit and audit log are
+// moved from the page readers' browser server, where they were the state of one process; here they are
+// fields of an entry. Calls with different handles share nothing: no module-level browser state.
+
+import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { appendFileSync, cpSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { chromium } from "patchright";
+
+const MAX_BROWSERS = 4;
+const IDLE_MS = 10 * 60_000;
+const CALL_LIMIT_MS = 120_000;
+const LOG_KEEP_MS = 30 * 24 * 3_600_000;
+// The close of the browser resetBrowser last dropped: its Chrome holds the profile's lock until it exits, and a launch
+// on a locked profile fails at once. A launch waits for it, at most RETIRE_MS.
+const RETIRE_MS = 15_000;
+
+const table = new Map(); // handle -> entry
+const closing = new Set(); // entries out of the table whose Xvfb and clone are not gone yet
+let config = null;
+
+const now = () => new Date().toISOString();
+
+/** Called once by the daemon. Clones and old logs left by a dead daemon are deleted here. */
+export function configure({ baseProfile, stateDir, proxy, callLimitMs, idleMs }) {
+  config = { baseProfile, profiles: join(stateDir, "profiles"), logs: join(stateDir, "logs"), proxy,
+    callLimitMs: callLimitMs ?? CALL_LIMIT_MS, idleMs: idleMs ?? IDLE_MS };
+  // Every clone belongs to a dead daemon (one daemon per state directory). Its Chrome and Xvfb are
+  // killed by systemd's control-group kill, not here.
+  rmSync(config.profiles, { recursive: true, force: true });
+  mkdirSync(config.profiles, { recursive: true });
+  mkdirSync(config.logs, { recursive: true });
+  for (const name of readdirSync(config.logs)) {
+    const file = join(config.logs, name);
+    if (name.endsWith(".jsonl") && Date.now() - statSync(file).mtimeMs > LOG_KEEP_MS) rmSync(file);
+  }
+  setInterval(() => {
+    for (const b of [...table.values()]) {
+      if (b.busy === 0 && Date.now() - b.lastUsed > config.idleMs) {
+        close(b.handle, "idle").catch((error) => process.stderr.write(`browser-mcp: closing idle ${b.handle} failed: ${error.message}\n`));
+      }
+    }
+  }, Math.min(config.idleMs / 2, 60_000)).unref();
+}
+
+export function log(b, event) {
+  appendFileSync(b.log, JSON.stringify({ ts: now(), browser: b.handle, ...event }) + "\n");
+}
+
+/** A browser of one's own: a handle and a copy of the base profile. Chrome launches on the first call. */
+export function start() {
+  if (table.size >= MAX_BROWSERS) {
+    throw new Error(`${table.size} browsers are running, at the cap of ${MAX_BROWSERS}: close one first`);
+  }
+  const handle = randomBytes(12).toString("base64url");
+  const profile = join(config.profiles, handle);
+  cpSync(config.baseProfile, profile, { recursive: true, filter: (src) => !/^Singleton/.test(src.split("/").pop()) });
+  const b = { handle, profile, log: join(config.logs, `${handle}.jsonl`), xvfb: null, context: null, starting: null,
+    retiring: Promise.resolve(), tabs: new Map(), current: null, front: null, tabCount: 0, lastGood: new WeakMap(),
+    queue: Promise.resolve(), lastUsed: Date.now(), busy: 0, closed: false };
+  table.set(handle, b);
+  log(b, { type: "registered" });
+  return handle;
+}
+
+export function get(handle) {
+  const b = table.get(handle);
+  if (!b) {
+    throw new Error(`unknown browser "${handle}": it was closed, closed after ${config.idleMs / 60_000} idle minutes, ` +
+      "or the daemon restarted; call start for a new one");
+  }
+  return b;
+}
+
+async function startXvfb() {
+  const proc = spawn("Xvfb", ["-displayfd", "3", "-screen", "0", "1280x1024x24", "-nolisten", "tcp"], {
+    stdio: ["ignore", "ignore", "ignore", "pipe"],
+  });
+  const display = await new Promise((ok, err) => {
+    let out = "";
+    proc.stdio[3].on("data", (chunk) => {
+      out += chunk;
+      if (out.includes("\n")) ok(out.trim());
+    });
+    proc.once("exit", (code) => err(new Error(`Xvfb exited with ${code}`)));
+    setTimeout(() => err(new Error("Xvfb did not report a display")), 15_000);
+  });
+  return { proc, display: `:${display}` };
+}
+
+function addTab(b, page) {
+  const id = `t${++b.tabCount}`;
+  b.tabs.set(id, page);
+  page.on("close", () => b.tabs.delete(id));
+  return id;
+}
+
+const gone = (b) => {
+  if (b.closed) throw new Error("the browser was closed during startup");
+};
+
+export async function ensureBrowser(b) {
+  if (b.starting) return b.starting;
+  if (b.context) return;
+  b.starting = (async () => {
+    await Promise.race([b.retiring, new Promise((ok) => setTimeout(ok, RETIRE_MS).unref())]);
+    gone(b);
+    if (!b.xvfb) {
+      const xvfb = await startXvfb();
+      if (b.closed) xvfb.proc.kill("SIGTERM");
+      gone(b);
+      b.xvfb = xvfb;
+    }
+    const context = await chromium.launchPersistentContext(b.profile, {
+      headless: false,
+      channel: "chrome",
+      env: { ...process.env, DISPLAY: b.xvfb.display },
+      viewport: { width: 1280, height: 1000 },
+      serviceWorkers: "block",
+      args: ["--no-first-run", "--disable-session-crashed-bubble", "--password-store=basic",
+        "--disable-background-networking", "--disable-component-update"],
+      ...(config.proxy ? { proxy: { server: config.proxy } } : {}),
+    });
+    if (b.closed) {
+      await context.close().catch(() => {});
+      gone(b);
+    }
+    b.context = context;
+    // The source policy (#13) installs its request guard here, before the first navigation of any tab.
+    context.on("page", (page) => addTab(b, page));
+    for (const page of context.pages()) b.current = addTab(b, page);
+    if (!b.current) b.current = addTab(b, await context.newPage());
+    log(b, { type: "browser_started", display: b.xvfb.display, xvfb_pid: b.xvfb.proc.pid, profile: b.profile });
+  })().finally(() => {
+    b.starting = null;
+  });
+  return b.starting;
+}
+
+/** Drop a browser stuck in a call that ran over its limit; the next call starts a fresh one on the same profile. */
+export function resetBrowser(b, reason) {
+  const old = b.context;
+  b.context = null;
+  b.tabs.clear();
+  b.current = null;
+  b.front = null;
+  log(b, { type: "browser_reset", reason });
+  b.retiring = Promise.allSettled([old?.close()]);
+}
+
+/** One call at a time per browser; other browsers' calls do not wait for it. */
+export function run(b, fn) {
+  const result = b.queue.then(async () => {
+    b.busy++;
+    b.lastUsed = Date.now();
+    try {
+      return await fn();
+    } finally {
+      b.busy--;
+      b.lastUsed = Date.now();
+    }
+  });
+  b.queue = result.catch(() => {});
+  return result;
+}
+
+export class CallTimeout extends Error {}
+
+/** Run fn within the call's time limit; past it the call fails. */
+export function limited(name, fn, onTimeout) {
+  const limit = config.callLimitMs;
+  let timer;
+  const over = new Promise((_, err) => {
+    timer = setTimeout(() => {
+      onTimeout?.();
+      err(new CallTimeout(`${name} ran over its ${limit / 1000} s limit and was stopped`));
+    }, limit);
+  });
+  return Promise.race([fn(), over]).finally(() => clearTimeout(timer));
+}
+
+/** Delete the handle at once, so later calls get "unknown browser"; then end its Chrome and Xvfb and delete its clone. */
+export async function close(handle, reason) {
+  const b = get(handle);
+  table.delete(handle);
+  closing.add(b);
+  b.closed = true;
+  // A launch in flight ends its own Chrome once it sees `closed`; the clone is deleted only after, so Chrome
+  // does not write a fresh profile into a deleted directory.
+  await Promise.allSettled([b.starting]);
+  try {
+    await b.context?.close();
+  } catch {}
+  b.xvfb?.proc.kill("SIGTERM");
+  await Promise.race([b.retiring, new Promise((ok) => setTimeout(ok, RETIRE_MS).unref())]);
+  rmSync(b.profile, { recursive: true, force: true, maxRetries: 3 });
+  closing.delete(b);
+  log(b, { type: "closed", reason });
+}
+
+export function closeAll(reason) {
+  return Promise.allSettled([...table.keys()].map((handle) => close(handle, reason)));
+}
+
+/**
+ * For the process's exit hook, whatever path ends it: no await, no Chrome of its own is waited for. It covers
+ * the entries a close is still ending too: on SIGINT the process exits while closeAll is under way.
+ */
+export function exitSync() {
+  for (const b of [...table.values(), ...closing]) {
+    b.xvfb?.proc.kill("SIGTERM");
+    rmSync(b.profile, { recursive: true, force: true, maxRetries: 3 });
+  }
+}

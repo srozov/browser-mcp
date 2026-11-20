@@ -1,17 +1,15 @@
 {
-  "name": "stagehand-repl-mcp",
+  "name": "browser-mcp",
   "version": "1.0.0",
-  "description": "MCP server for browser automation via Stagehand, running in-process with a persistent browser session.",
+  "description": "A local browser MCP service: a headed Chrome of its own for every caller, over Streamable HTTP.",
   "license": "MIT",
   "type": "module",
   "bin": {
-    "stagehand-repl-mcp": "./stagehand-mcp.mjs"
+    "browser-mcp": "./src/daemon.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
-    "@browserbasehq/stagehand": "^3.0.3",
-    "@ai-sdk/anthropic": "^2.0.64",
-    "patchright": "*",
+    "patchright": "1.57.0",
     "zod": "^3.25.0"
   }
 }
