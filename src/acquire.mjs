@@ -173,7 +173,7 @@ async function savePage(b, p, how = {}) {
       });
     }
     if (!existsSync(join(dir, "page.png"))) delete files.image;
-    const record = { source_id: id, event, kind: "html", sha256: digest, bytes: html.length, retrieved_at: now(),
+    const record = { source_id: id, event, kind: "html", sha256: digest, bytes: Buffer.byteLength(html), retrieved_at: now(),
       requested_url: url, final_url: url, redirects: [], mime: "text/html", title, parent_url: null, files,
       ...(imageError ? { image_error: imageError } : {}), ...how };
     register(sources, record);
