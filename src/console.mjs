@@ -100,6 +100,8 @@ function startConsole(b) {
     pending = null;
   };
   child.on("message", (m) => {
+    // Caller code can process.send too: a message that is not an object would throw here and end the daemon.
+    if (typeof m !== "object" || m === null) return log(b, { type: "console_error", error: `the console's process sent ${JSON.stringify(m)}` });
     if (m.ready) return ok();
     // Its error names the endpoint: the audit log gets it, the reply does not.
     if (m.failed) {

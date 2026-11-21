@@ -269,6 +269,10 @@ test("caller code runs in a child process: not the daemon, without its key or en
   assert.equal(forged.error, false, forged.text);
   assert.equal((await call("browse", { browser: b, action: "text" })).error, false);
   assert.equal(events(b).filter((e) => e.type === "link_capture_error").length, 2);
+  // Nor does a message the script sends on the child's channel.
+  const sent = await run(b, "process.send(null); await new Promise((ok) => setTimeout(ok, 500)); return 1");
+  assert.equal(sent.error, false, sent.text);
+  assert.equal(sent.data.value, 1);
   const [port] = readFileSync(join(d.stateDir, "profiles", b, "DevToolsActivePort"), "utf8").split("\n");
   assert.ok(!replies.some((t) => t.includes(`:${port}`) || t.includes(KEY)), "no reply holds the endpoint or the key");
 }, { save: false }));
