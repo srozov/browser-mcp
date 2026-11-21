@@ -102,8 +102,9 @@ Tools:
   URL, the parent page and the publication evidence (HTTP `Last-Modified`, the PDF's dates, the link's context).
   Source ids come from the content's hash: the same bytes keep their source_id. `sources/registry.jsonl` gets a
   line per save, with the provenance: requested and final URL, redirects, parent page, link text and context, fetch
-  time and hash. Saves into one `save_dir` run one at a time, so several browsers can share it. 6-minute limit; a call
-  over it fails without restarting the browser.
+  time and hash. Several browsers can share a `save_dir`: each save is prepared in a staging directory of its own
+  under `sources/.staging/`, then moved into place and registered one at a time. 6-minute limit; a call over it
+  fails without restarting the browser.
 - `close {browser}`: ends the browser. A throwaway profile copy is deleted; a named profile stays.
 - `search {query}`: up to 10 web results (title, url, snippet, date) through MiniMax; 30 s limit; no browser.
 - `news_search {query, from, to, edition?}`: Google News headlines in the day range, newest first, at most 50,
