@@ -3,8 +3,8 @@
 // outline are its own. The refusal at the top of `open` is moved from the readers' server, with the
 // resolved-address check added; so is the one before a click on a link. The page model is snapshot.mjs (moved).
 // A styled checkbox is ticked through its own label only, never through an overlay (new). A document a click opens
-// in a new tab, or downloads, is saved by code (acquire.mjs), as the readers' after-action step did. The console
-// arrives with a later ticket.
+// in a new tab, or downloads, is saved by code (acquire.mjs), as the readers' after-action step did; the console
+// (console.mjs) shares that step for the tabs its scripts open.
 
 import { errors } from "patchright";
 import { saveTabDocument } from "./acquire.mjs";
@@ -287,9 +287,9 @@ function navigation(b, p) {
 
 /**
  * The tabs an action opened: a public page becomes the current tab; a blocked one is closed; a document one is saved
- * by code, with the clicked link's text and context, and closed.
+ * by code, with the clicked link's text and context (and its page, when the console captured it), and closed.
  */
-async function newTabs(b, p, info) {
+export async function newTabs(b, p, info) {
   const extra = {};
   for (const id of b.opened.splice(0)) {
     const tab = b.tabs.get(id);
@@ -304,7 +304,7 @@ async function newTabs(b, p, info) {
     const doc = b.documents.get(tab) ?? (isDocumentType(shows) ? tab.url() : null);
     if (doc && isPublicPage(doc)) {
       const opener = await tab.opener().catch(() => null) ?? p;
-      b.downloads.push(saveTabDocument(b, doc, { parent_url: opener.url(), link_text: info.name ?? null, link_context: info.context ?? null }));
+      b.downloads.push(saveTabDocument(b, doc, { parent_url: info.parent_url ?? opener.url(), link_text: info.name ?? null, link_context: info.context ?? null }));
       await tab.close().catch(() => {});
       continue;
     }

@@ -2,15 +2,17 @@
 // profile, its own tabs and its own call queue. The launch, reset, cleanup, time limit and audit log are
 // moved from the page readers' browser server, where they were the state of one process; here they are
 // fields of an entry. So are the request guard and the rejection log (moved), the policy proxy (new,
-// proxy.mjs) and the downloads a page starts (moved; acquire.mjs saves them). Calls with different handles share
+// proxy.mjs) and the downloads a page starts (moved; acquire.mjs saves them). So are the debugging port, the
+// browser's PID and the link capture of the code console (moved; console.mjs). Calls with different handles share
 // nothing: no module-level browser state.
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, cpSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { appendFileSync, cpSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "patchright";
 import { saveDownload } from "./acquire.mjs";
+import { installLinkCapture } from "./console.mjs";
 import { isDocumentType, refuse, systemLookup } from "./policy.mjs";
 import { profilePath } from "./profiles.mjs";
 import { startProxy } from "./proxy.mjs";
@@ -34,13 +36,15 @@ const now = () => new Date().toISOString();
 /** Called once by the daemon. Clones and old logs left by a dead daemon are deleted here. */
 /** `proxy` is the fixture proxy of the offline tests: the policy proxy's upstream. `lookup` resolves names for the policy. */
 export function configure({ baseProfile, profileRoot, stateDir, proxy, lookup, callLimitMs, idleMs, screenshotMs, prepareDelayMs }) {
-  config = { baseProfile, profileRoot, profiles: join(stateDir, "profiles"), logs: join(stateDir, "logs"), upstream: proxy, lookup: lookup ?? systemLookup,
+  config = { baseProfile, profileRoot, profiles: join(stateDir, "profiles"), downloads: join(stateDir, "downloads"), logs: join(stateDir, "logs"), upstream: proxy, lookup: lookup ?? systemLookup,
     callLimitMs: callLimitMs ?? CALL_LIMIT_MS, idleMs: idleMs ?? IDLE_MS, screenshotMs: screenshotMs ?? SCREENSHOT_MS,
     prepareDelayMs: prepareDelayMs ?? 0 };
   // Every clone belongs to a dead daemon (one daemon per state directory). Its Chrome and Xvfb are
   // killed by systemd's control-group kill, not here.
   rmSync(config.profiles, { recursive: true, force: true });
   mkdirSync(config.profiles, { recursive: true });
+  rmSync(config.downloads, { recursive: true, force: true });
+  mkdirSync(config.downloads, { recursive: true });
   mkdirSync(config.logs, { recursive: true });
   for (const name of readdirSync(config.logs)) {
     const file = join(config.logs, name);
@@ -128,8 +132,9 @@ export function start({ profile: name, saveDir = null } = {}) {
   const handle = randomBytes(12).toString("base64url");
   const profile = named ?? join(config.profiles, handle);
   if (!named) cpSync(config.baseProfile, profile, { recursive: true, filter: (src) => !/^Singleton/.test(src.split("/").pop()) });
-  const b = { handle, profile, named: named ? name : null, saveDir, downloads: [], log: join(config.logs, `${handle}.jsonl`), xvfb: null, proxy: null, lastRefusal: null, context: null, starting: null,
+  const b = { handle, profile, named: named ? name : null, saveDir, downloads: [], downloadsPath: join(config.downloads, handle), log: join(config.logs, `${handle}.jsonl`), xvfb: null, proxy: null, lastRefusal: null, context: null, starting: null,
     retiring: Promise.resolve(), tabs: new Map(), current: null, front: null, tabCount: 0, lastGood: new WeakMap(), opened: [], documents: new WeakMap(), refusedNavigation: null,
+    endpoint: null, pid: null, console: null, links: new WeakMap(), linkCapture: new WeakMap(),
     queue: Promise.resolve(), lastUsed: Date.now(), busy: 0, closed: false };
   table.set(handle, b);
   log(b, { type: "registered", ...(b.named ? { profile: b.named } : {}) });
@@ -164,6 +169,10 @@ async function startXvfb() {
 function addTab(b, page) {
   const id = `t${++b.tabCount}`;
   b.tabs.set(id, page);
+  // The console's clicks keep their link's text and context; a failure is logged, and the console waits for it.
+  const capture = installLinkCapture(b, page);
+  capture.catch((error) => log(b, { type: "link_capture_error", error: String(error.message || error) }));
+  b.linkCapture.set(page, capture);
   page.on("close", () => b.tabs.delete(id));
   // Saved by code; the action that caused it, or the next call, reports it.
   page.on("download", (download) => {
@@ -203,6 +212,8 @@ export async function ensureBrowser(b) {
       gone(b);
       b.proxy = proxy;
     }
+    // The port Chrome writes at startup is read back below: a file left by an earlier Chrome must not be.
+    rmSync(join(b.profile, "DevToolsActivePort"), { force: true });
     const context = await chromium.launchPersistentContext(b.profile, {
       headless: false,
       channel: "chrome",
@@ -210,16 +221,33 @@ export async function ensureBrowser(b) {
       viewport: { width: 1280, height: 1000 },
       serviceWorkers: "block",
       acceptDownloads: true,
+      downloadsPath: b.downloadsPath,
       // Upstream Playwright disables the back-forward cache and patchright does not: a page restored from it
       // never fires its load events again, so back would wait out its time limit.
       args: ["--no-first-run", "--disable-session-crashed-bubble", "--password-store=basic",
         "--disable-background-networking", "--disable-component-update", "--disable-back-forward-cache",
-        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"],
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        // The console's child connects here; the endpoint is never in a reply.
+        "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1"],
       proxy: { server: `http://127.0.0.1:${b.proxy.port}` },
     });
     if (b.closed) {
       await context.close().catch(() => {});
       gone(b);
+    }
+    // The console's endpoint, and the PID a console timeout kills: closing the context does not stop a renderer
+    // running a script. Without either the browser is not used.
+    try {
+      const [port] = readFileSync(join(b.profile, "DevToolsActivePort"), "utf8").split("\n");
+      const session = await context.browser().newBrowserCDPSession();
+      const { processInfo } = await session.send("SystemInfo.getProcessInfo");
+      await session.detach();
+      b.pid = processInfo.find((p) => p.type === "browser")?.id;
+      if (!b.pid || !/^\d+$/.test(port)) throw new Error("no debugging port or browser PID");
+      b.endpoint = `http://127.0.0.1:${port}`;
+    } catch (error) {
+      await context.close().catch(() => {});
+      throw new Error(`the browser started without its console endpoint: ${error.message}`);
     }
     b.context = context;
     await context.route("**/*", guard(b));
@@ -231,7 +259,7 @@ export async function ensureBrowser(b) {
     });
     for (const page of context.pages()) b.current = addTab(b, page);
     if (!b.current) b.current = addTab(b, await context.newPage());
-    log(b, { type: "browser_started", display: b.xvfb.display, xvfb_pid: b.xvfb.proc.pid, proxy_port: b.proxy.port, profile: b.profile });
+    log(b, { type: "browser_started", display: b.xvfb.display, xvfb_pid: b.xvfb.proc.pid, chrome_pid: b.pid, proxy_port: b.proxy.port, profile: b.profile });
   })().finally(() => {
     b.starting = null;
   });
@@ -249,6 +277,10 @@ export function resetBrowser(b, reason) {
   b.opened.length = 0;
   b.current = null;
   b.front = null;
+  b.endpoint = null;
+  b.pid = null;
+  b.console?.stop();
+  b.console = null;
   log(b, { type: "browser_reset", reason });
   b.retiring = Promise.allSettled([old?.close()]);
 }
@@ -295,6 +327,7 @@ export async function close(handle, reason) {
   // (`closing`) ends on every path, a throw included.
   try {
     await Promise.allSettled([b.starting]);
+    b.console?.stop();
     try {
       await b.context?.close();
     } catch {}
@@ -302,6 +335,7 @@ export async function close(handle, reason) {
     await b.proxy?.close();
     await Promise.race([b.retiring, new Promise((ok) => setTimeout(ok, RETIRE_MS).unref())]);
     if (!b.named) rmSync(b.profile, { recursive: true, force: true, maxRetries: 3 });
+    rmSync(b.downloadsPath, { recursive: true, force: true });
   } finally {
     closing.delete(b);
   }
@@ -320,6 +354,8 @@ export function closeAll(reason) {
 export function exitSync() {
   for (const b of [...table.values(), ...closing]) {
     b.xvfb?.proc.kill("SIGTERM");
+    b.console?.stop();
     if (!b.named) rmSync(b.profile, { recursive: true, force: true, maxRetries: 3 });
+    rmSync(b.downloadsPath, { recursive: true, force: true });
   }
 }

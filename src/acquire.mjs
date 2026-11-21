@@ -305,11 +305,11 @@ export async function saveDownload(b, download, pageUrl) {
   }
 }
 
-/** A document a new tab showed, fetched and saved by code; resolves to what happened to it, never rejects. */
+/** A document a tab showed (a new tab, or the console's), fetched and saved by code; resolves to what happened to it, never rejects. */
 export async function saveTabDocument(b, url, meta) {
   if (!b.saveDir) return { not_saved: url, reason: NO_SAVE_DIR };
   try {
-    return await fetchUrl(b, url, { ...meta, via: "new_tab" });
+    return await fetchUrl(b, url, { via: "new_tab", ...meta });
   } catch (error) {
     return { failed: url, error: String(error.message || error) };
   }
