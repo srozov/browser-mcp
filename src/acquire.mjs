@@ -234,10 +234,14 @@ async function fetchInBrowser(b, url, meta) {
   const previous = b.lastGood.get(p);
   const navigated = p.waitForResponse((r) => r.request().isNavigationRequest() && r.frame() === p.mainFrame(),
     { timeout: NAV_TIMEOUT_MS }).catch(() => null);
+  // An earlier click's late download is the call's to report, not this URL's.
+  const earlier = b.downloads.length;
+  let download = false;
   await p.goto(url, { waitUntil: "commit", timeout: NAV_TIMEOUT_MS }).catch((e) => {
     if (!String(e).includes("Download is starting")) throw e;
+    download = true;
   });
-  const done = await Promise.all(b.downloads.splice(0));
+  const done = download ? await Promise.all(b.downloads.splice(earlier)) : [];
   if (done.length) return done[0];
   const response = await navigated;
   if (!response) throw new Error(`${url} gave no response in the browser either`);

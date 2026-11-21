@@ -132,6 +132,7 @@ export async function open(b, url) {
   }
   const p = await page(b);
   const started = Date.now();
+  const earlier = b.downloads.length; // an earlier click's late download is the call's to report, not this URL's
   // Chrome's PDF viewer never reaches domcontentloaded: a document is recognised by its response headers.
   const document = p.waitForResponse((r) => r.request().isNavigationRequest() && r.frame() === p.mainFrame() &&
     isDocumentType(r.headers()["content-type"]), { timeout: NAV_TIMEOUT_MS }).catch(() => null);
@@ -158,8 +159,7 @@ export async function open(b, url) {
     await p.goto(previous ?? "about:blank", { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS }).catch(() => {});
     throw new Error(`${blocked}${previous ? `; the tab is back on ${previous}` : ""}`);
   }
-  const done = await Promise.all(b.downloads.splice(0));
-  if (download || done.length) return { downloads: done, note: "the URL was a download, not a page" };
+  if (download) return { downloads: await Promise.all(b.downloads.splice(earlier)), note: "the URL was a download, not a page" };
   if (response && isDocumentType(response.headers()["content-type"])) {
     const previous = b.lastGood.get(p);
     await p.goto(previous ?? "about:blank", { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS }).catch(() => {});

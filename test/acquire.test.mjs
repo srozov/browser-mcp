@@ -273,6 +273,28 @@ test("downloads and document tabs a click opens are saved by code, also one that
   assert.equal((await browse(b, { action: "tabs" })).text.split("\n").length, 1, "the document tab was closed");
 }));
 
+test("a late download is reported with the next call, not taken for that call's own page or document", { timeout: 120_000 }, () => withBrowser(async (b) => {
+  const lateClick = async () => {
+    await browse(b, { action: "open", url: `${ISSUER}/presentations` });
+    const late = await browse(b, { action: "click", ref: refOf((await browse(b, { action: "observe", query: "download announcement" })).text, "Download announcement") });
+    assert.doesNotMatch(late.text, /source_id/);
+    await new Promise((ok) => setTimeout(ok, 4000));
+  };
+  await lateClick();
+  const opened = await browse(b, { action: "open", url: `${ISSUER}/reports` });
+  assert.equal(opened.error, false, opened.text);
+  const page = JSON.parse(opened.text);
+  assert.equal(page.url, `${ISSUER}/reports`);
+  assert.match(page.downloads_finished_since_last_call[0].source_id, /^s[0-9a-f]{10}$/);
+  await lateClick();
+  const r = await acquire(b, { url: "http://filings.regulator.test/q2.htm" });
+  assert.equal(r.error, false, r.text);
+  const saved = JSON.parse(r.text);
+  assert.equal(saved.kind, "html");
+  assert.equal(saved.final_url, "http://filings.regulator.test/q2.htm");
+  assert.match(saved.downloads_finished_since_last_call[0].source_id, /^s[0-9a-f]{10}$/);
+}));
+
 test("without a save_dir acquire fails naming it, and a download is reported as not saved", () => withBrowser(async (b) => {
   await browse(b, { action: "open", url: `${ISSUER}/reports` });
   const r = await acquire(b, { current_page: true });
