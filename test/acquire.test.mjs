@@ -20,6 +20,7 @@ let site;
 let root;
 let d;
 let c;
+const daemons = [];
 const saveDirs = [];
 
 async function freePort() {
@@ -30,16 +31,16 @@ async function freePort() {
   return port;
 }
 
-before(async () => {
-  site = await startFixtureSite();
-  root = mkdtempSync(join(tmpdir(), "browser-mcp-acquire-"));
-  for (const dir of ["base", "state", "named"]) mkdirSync(join(root, dir));
+/** Spawn a daemon on its own state directory (`env` adds settings); resolves once it listens, with a client. */
+async function daemon(name, env = {}) {
+  for (const dir of ["base", `${name}-state`, `${name}-named`]) mkdirSync(join(root, dir), { recursive: true });
   const port = await freePort();
   const proc = spawn(process.execPath, [DAEMON], { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env,
-    BROWSER_PORT: String(port), BROWSER_BASE_PROFILE: join(root, "base"), BROWSER_STATE_DIR: join(root, "state"),
-    BROWSER_PROFILE_ROOT: join(root, "named"), BROWSER_MINIMAX_KEY: "test-key", BROWSER_TEST_PROXY: site.url,
-    BROWSER_TEST_HOSTS: JSON.stringify(TEST_HOSTS), BROWSER_TEST_CALL_LIMIT_MS: "20000" } });
-  d = { proc, stateDir: join(root, "state"), exited: new Promise((ok) => proc.once("exit", ok)) };
+    BROWSER_PORT: String(port), BROWSER_BASE_PROFILE: join(root, "base"), BROWSER_STATE_DIR: join(root, `${name}-state`),
+    BROWSER_PROFILE_ROOT: join(root, `${name}-named`), BROWSER_MINIMAX_KEY: "test-key", BROWSER_TEST_PROXY: site.url,
+    BROWSER_TEST_HOSTS: JSON.stringify(TEST_HOSTS), BROWSER_TEST_CALL_LIMIT_MS: "20000", ...env } });
+  const one = { proc, stateDir: join(root, `${name}-state`), exited: new Promise((ok) => proc.once("exit", ok)) };
+  daemons.push(one);
   await new Promise((ok, err) => {
     let stderr = "";
     proc.stderr.on("data", (chunk) => {
@@ -47,22 +48,32 @@ before(async () => {
       process.stderr.write(chunk);
       if (stderr.includes("listening on")) ok();
     });
-    d.exited.then((code) => err(new Error(`daemon exited with ${code}: ${stderr}`)));
+    one.exited.then((code) => err(new Error(`daemon exited with ${code}: ${stderr}`)));
   });
-  c = new Client({ name: "test", version: "0" });
-  await c.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
+  one.client = new Client({ name: "test", version: "0" });
+  await one.client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
+  return one;
+}
+
+before(async () => {
+  site = await startFixtureSite();
+  root = mkdtempSync(join(tmpdir(), "browser-mcp-acquire-"));
+  d = await daemon("main");
+  c = d.client;
 });
 
 after(async () => {
-  await c?.close();
-  d?.proc.kill("SIGTERM");
-  await d?.exited;
+  for (const one of daemons) {
+    await one.client?.close();
+    one.proc.kill("SIGTERM");
+    await one.exited;
+  }
   site?.server.close();
   if (root) rmSync(root, { recursive: true, force: true });
 });
 
-async function call(name, args) {
-  const r = await c.callTool({ name, arguments: args });
+async function call(name, args, client = c) {
+  const r = await client.callTool({ name, arguments: args });
   return { error: !!r.isError, text: r.content.filter((x) => x.type === "text").map((x) => x.text).join("\n") };
 }
 
@@ -193,7 +204,12 @@ test("a PDF with junk before its header is stored; HTML served as a PDF is refus
   assert.equal(bad.error, true);
   assert.match(bad.text, /was served as a PDF but is not one/);
   assert.ok(!registry(dir).some((r) => String(r.final_url).endsWith("not-a.pdf")));
+  const broken = await acquire(b, { url: "http://cdn.shared.test/space2/broken.pdf" });
+  assert.equal(broken.error, true);
+  assert.match(broken.text, /PDF preparation failed: .+/);
+  assert.ok(!registry(dir).some((r) => String(r.final_url).endsWith("broken.pdf")));
   assert.equal(readdirSync(join(dir, "sources")).filter((n) => n.startsWith("s")).length, 1);
+  assert.deepEqual(readdirSync(join(dir, "sources", ".staging")), [], "a save that failed partway left no staging directory");
 }));
 
 test("an xlsx gives one text page per sheet, in workbook order", () => withBrowser(async (b, dir) => {
@@ -334,7 +350,39 @@ test("two browsers with different save_dirs save into their own; two on one save
     assert.equal(ids[0], ids[1]);
     assert.deepEqual(registry(shared).map((x) => x.event).sort(), ["acquired", "acquired_again"]);
     assert.deepEqual(readdirSync(join(shared, "sources")).filter((n) => !n.startsWith(".")).sort(), ["registry.jsonl", ids[0]]);
+    assert.deepEqual(readdirSync(join(shared, "sources", ".staging")), [], "the save that lost the race removed its staging directory");
+    assert.equal(rs.filter((r) => JSON.parse(r.text).note === "already acquired; same bytes and source id").length, 1);
   }, { saveDir: shared }), { saveDir: shared });
+});
+
+test("a slow document preparation in one browser does not hold up another browser's save into the same save_dir", { timeout: 120_000 }, async () => {
+  const PREPARE_MS = 8_000;
+  const slow = await daemon("slow", { BROWSER_TEST_PREPARE_MS: String(PREPARE_MS) });
+  const shared = newSaveDir();
+  const begin = async () => JSON.parse((await call("start", { save_dir: shared }, slow.client)).text).browser;
+  const [b1, b2] = [await begin(), await begin()];
+  try {
+    for (const b of [b1, b2]) assert.equal((await call("browse", { browser: b, action: "open", url: `${ISSUER}/reports` }, slow.client)).error, false);
+    const t0 = Date.now();
+    let aDone = null;
+    const a = call("acquire", { browser: b1, url: "http://cdn.shared.test/space1/ar-2025.pdf" }, slow.client).then((r) => {
+      aDone = Date.now();
+      return r;
+    });
+    await new Promise((ok) => setTimeout(ok, 2_000)); // A is fetched and inside its preparation
+    const page = await call("acquire", { browser: b2, current_page: true }, slow.client);
+    const bDone = Date.now();
+    assert.equal(page.error, false, page.text);
+    assert.equal(aDone, null, "B's save finished while A was still preparing");
+    assert.ok(bDone - t0 < PREPARE_MS, `B finished ${bDone - t0} ms after A began, within A's ${PREPARE_MS} ms preparation`);
+    const doc = await a;
+    assert.equal(doc.error, false, doc.text);
+    assert.deepEqual(registry(shared).map((x) => x.kind), ["html", "pdf"]);
+    assert.deepEqual(readdirSync(join(shared, "sources", ".staging")), []);
+  } finally {
+    await call("close", { browser: b1 }, slow.client);
+    await call("close", { browser: b2 }, slow.client);
+  }
 });
 
 test("nothing is written outside each save_dir's sources, and the daemon keeps no source", () => {
@@ -342,6 +390,8 @@ test("nothing is written outside each save_dir's sources, and the daemon keeps n
     const top = readdirSync(dir);
     assert.ok(top.length === 0 || (top.length === 1 && top[0] === "sources"), `${dir}: ${top}`);
   }
-  assert.deepEqual(readdirSync(d.stateDir).sort(), ["logs", "profiles"]);
-  assert.ok(readdirSync(join(d.stateDir, "logs")).every((n) => n.endsWith(".jsonl")));
+  for (const one of daemons) {
+    assert.deepEqual(readdirSync(one.stateDir).sort(), ["logs", "profiles"]);
+    assert.ok(readdirSync(join(one.stateDir, "logs")).every((n) => n.endsWith(".jsonl")));
+  }
 });

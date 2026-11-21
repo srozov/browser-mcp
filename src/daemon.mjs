@@ -352,7 +352,8 @@ app.delete("/mcp", notAllowed);
 const http = app.listen(PORT, "127.0.0.1", (error) => {
   if (error) fail(`cannot listen on 127.0.0.1:${PORT}: ${error.message}`);
   // Offline tests only: the fixture proxy that plays the internet is the policy proxy's upstream, the host map
-  // replaces DNS, every call limit is shortened to see one run over, and so is the idle limit.
+  // replaces DNS, every call limit is shortened to see one run over, and so is the idle limit; a document's
+  // preparation can be slowed to see one run long.
   configure({
     baseProfile: env.BROWSER_BASE_PROFILE,
     profileRoot: env.BROWSER_PROFILE_ROOT,
@@ -361,6 +362,7 @@ const http = app.listen(PORT, "127.0.0.1", (error) => {
     lookup,
     callLimitMs: TEST_LIMIT,
     screenshotMs: TEST_LIMIT ? 2_000 : undefined,
+    prepareDelayMs: Number(env.BROWSER_TEST_PREPARE_MS) || undefined,
     idleMs: Number(env.BROWSER_TEST_IDLE_MS) || undefined,
   });
   process.stderr.write(`browser-mcp listening on http://127.0.0.1:${PORT}/mcp\n`);

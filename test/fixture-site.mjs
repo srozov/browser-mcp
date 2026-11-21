@@ -231,6 +231,8 @@ const FILES = {
   // HTML page served as a PDF.
   "cdn.shared.test/space2/prefixed.pdf": [Buffer.concat([Buffer.from("\r\n\r\n"), pdf([["Prefixed report 42.0"]])]), null],
   "cdn.shared.test/space2/not-a.pdf": [Buffer.from("<!doctype html><html><body>viewer</body></html>"), null],
+  // A PDF header with no PDF behind it: poppler fails on it after the bytes are written.
+  "cdn.shared.test/space2/broken.pdf": [Buffer.from("%PDF-1.4\nnot really a pdf\n"), null],
   "ir.issuer.test/files/fy2025-presentation.pdf": [PRESENTATION, "Tue, 03 Mar 2026 06:30:00 GMT"],
   "ir.issuer.test/files/q.pdf": [pdf([["Quarter 7.40"]]), null, "attachment; filename=q.pdf"],
   "bucket.storage.test/capital.pdf": [pdf([["Capital structure", "Registered shares issued 76,000,000"]]), null],

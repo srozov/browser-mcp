@@ -33,9 +33,10 @@ const now = () => new Date().toISOString();
 
 /** Called once by the daemon. Clones and old logs left by a dead daemon are deleted here. */
 /** `proxy` is the fixture proxy of the offline tests: the policy proxy's upstream. `lookup` resolves names for the policy. */
-export function configure({ baseProfile, profileRoot, stateDir, proxy, lookup, callLimitMs, idleMs, screenshotMs }) {
+export function configure({ baseProfile, profileRoot, stateDir, proxy, lookup, callLimitMs, idleMs, screenshotMs, prepareDelayMs }) {
   config = { baseProfile, profileRoot, profiles: join(stateDir, "profiles"), logs: join(stateDir, "logs"), upstream: proxy, lookup: lookup ?? systemLookup,
-    callLimitMs: callLimitMs ?? CALL_LIMIT_MS, idleMs: idleMs ?? IDLE_MS, screenshotMs: screenshotMs ?? SCREENSHOT_MS };
+    callLimitMs: callLimitMs ?? CALL_LIMIT_MS, idleMs: idleMs ?? IDLE_MS, screenshotMs: screenshotMs ?? SCREENSHOT_MS,
+    prepareDelayMs: prepareDelayMs ?? 0 };
   // Every clone belongs to a dead daemon (one daemon per state directory). Its Chrome and Xvfb are
   // killed by systemd's control-group kill, not here.
   rmSync(config.profiles, { recursive: true, force: true });
@@ -63,6 +64,9 @@ export const policyLookup = () => config.lookup;
 
 /** The time a saved page's image may take, for acquire. */
 export const screenshotLimit = () => config.screenshotMs;
+
+/** Offline tests only: a wait before a document's pages are prepared, to see a slow preparation. 0 otherwise. */
+export const prepareDelay = () => config.prepareDelayMs;
 
 /** A refused request, in the browser's own log; `open` reads `lastRefusal` to say what a redirect hop hit. */
 export function rejected(b, via, url, reason, address) {

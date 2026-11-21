@@ -1,14 +1,14 @@
 // Saving a page or document with its provenance into the caller's save_dir: code-chosen paths, immutable bytes,
 // content-addressed source ids, an append-only registry. Moved from the page readers' browser server (its
 // acquisition section), where the sources went to the run's directory; here they go to `<save_dir>/sources/` of the
-// browser that saves them, and the daemon keeps none. New: each source is assembled in a staging directory and
-// renamed into place before it is registered, and the saves into one save_dir run one at a time, so browsers that
-// share a save_dir never collide. The page and sheet texts are pages.mjs's.
+// browser that saves them, and the daemon keeps none. New: each source is assembled in a staging directory of its own
+// and renamed into place before it is registered, and the rename and the registry line of saves into one save_dir run
+// one at a time, so browsers that share a save_dir never collide. The page and sheet texts are pages.mjs's.
 
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { policyLookup, rejected, screenshotLimit } from "./browsers.mjs";
+import { policyLookup, prepareDelay, rejected, screenshotLimit } from "./browsers.mjs";
 import { NAV_TIMEOUT_MS, blockedText, checkedPage, element, open, page, settle, visibleText } from "./browse.mjs";
 import { preparePdf, sheets } from "./pages.mjs";
 import { isDocumentType, normalize, refuse, reject } from "./policy.mjs";
@@ -34,7 +34,7 @@ function sourcesOf(b) {
   return dir;
 }
 
-// One chain of saves per save_dir (its real path): the check for an existing source, its writes and its registry line
+// One chain per save_dir (its real path): the check for an existing source, its move into place and its registry line
 // never interleave with another browser's save into the same save_dir.
 const chains = new Map();
 function inSaveDir(dir, fn) {
@@ -47,18 +47,40 @@ function inSaveDir(dir, fn) {
   return result;
 }
 
-/** Fill a fresh staging directory, then move it to `dir`: a failed or cut-off save leaves no half source. */
-async function assemble(sources, dir, fill) {
-  const staging = join(sources, ".staging", `${dir.split("/").pop()}-${randomBytes(4).toString("hex")}`);
-  mkdirSync(staging, { recursive: true });
-  try {
-    const result = await fill(staging);
-    renameSync(staging, dir);
-    return result;
-  } catch (error) {
-    rmSync(staging, { recursive: true, force: true });
-    throw error;
+/**
+ * Save source `id`. A source not saved yet is filled into a staging directory of its own, outside the save_dir's lock,
+ * so a long PDF never holds up another browser's save. Under the lock it is moved into place, unless a save of the
+ * same bytes got there first, and registered. `fill(staging)` returns what `record(event, filled)` adds to the record;
+ * a repeat gets `filled` null. A staging directory never outlives its save.
+ */
+async function save(b, sources, id, fill, record) {
+  const dir = join(sources, id);
+  let staging = null;
+  let filled = null;
+  if (!existsSync(dir)) {
+    staging = join(sources, ".staging", `${id}-${randomBytes(4).toString("hex")}`);
+    mkdirSync(staging, { recursive: true });
+    try {
+      filled = await fill(staging);
+    } catch (error) {
+      rmSync(staging, { recursive: true, force: true });
+      throw error;
+    }
   }
+  return inSaveDir(b.saveDir, () => {
+    let event = "acquired_again";
+    try {
+      if (staging && !existsSync(dir)) {
+        renameSync(staging, dir);
+        event = "acquired";
+      }
+    } finally {
+      if (staging) rmSync(staging, { recursive: true, force: true });
+    }
+    const r = record(event, event === "acquired" ? filled : null);
+    register(sources, r);
+    return r;
+  });
 }
 
 function register(sources, record) {
@@ -104,32 +126,29 @@ async function store(b, bytes, meta) {
   if (ext === "pdf" && !bytes.subarray(0, 1024).toString("latin1").includes("%PDF-")) {
     throw new Error(`${meta.final_url} was served as a PDF but is not one (it starts ${JSON.stringify(bytes.subarray(0, 40).toString("latin1"))})`);
   }
-  return inSaveDir(b.saveDir, async () => {
-    const dir = join(sources, id);
-    const record = { source_id: id, event: existsSync(dir) ? "acquired_again" : "acquired", kind: ext, sha256: digest,
-      bytes: bytes.length, retrieved_at: now(), ...meta, files: { original: `sources/${id}/original.${ext}` } };
-    if (record.event === "acquired") {
-      await assemble(sources, dir, async (staging) => {
-        const file = join(staging, `original.${ext}`);
-        writeFileSync(file, bytes, { flag: "wx" });
-        if (ext === "pdf") {
-          const info = await preparePdf(file, staging);
-          Object.assign(record, { title: info.title, pages: info.pages, pdf_created: info.created, pdf_modified: info.modified });
-          record.files.pages = `sources/${id}/pages/NNNN.txt and NNNN.png (PDF page index, 4 digits)`;
-        } else if (ext === "xlsx") {
-          const info = sheets(file, staging);
-          Object.assign(record, { pages: info.pages, sheets: info.sheets });
-          record.files.pages = `sources/${id}/pages/NNNN.txt (one per sheet in workbook order, 4 digits; cite the sheet's number as page)`;
-        }
-      });
-    } else {
-      const first = firstRecord(sources, id);
-      for (const key of ["title", "pages", "sheets", "pdf_created", "pdf_modified"]) if (first?.[key] !== undefined) record[key] = first[key];
-      if (first?.files) record.files = first.files;
+  const original = { original: `sources/${id}/original.${ext}` };
+  const record = await save(b, sources, id, async (staging) => {
+    const file = join(staging, `original.${ext}`);
+    writeFileSync(file, bytes, { flag: "wx" });
+    if (ext !== "pdf" && ext !== "xlsx") return { files: original };
+    await new Promise((ok) => setTimeout(ok, prepareDelay()));
+    if (ext === "pdf") {
+      const info = await preparePdf(file, staging);
+      return { title: info.title, pages: info.pages, pdf_created: info.created, pdf_modified: info.modified,
+        files: { ...original, pages: `sources/${id}/pages/NNNN.txt and NNNN.png (PDF page index, 4 digits)` } };
     }
-    register(sources, record);
-    return brief(b, record);
+    const info = sheets(file, staging);
+    return { pages: info.pages, sheets: info.sheets,
+      files: { ...original, pages: `sources/${id}/pages/NNNN.txt (one per sheet in workbook order, 4 digits; cite the sheet's number as page)` } };
+  }, (event, filled) => {
+    const r = { source_id: id, event, kind: ext, sha256: digest, bytes: bytes.length, retrieved_at: now(), ...meta, files: original, ...filled };
+    if (filled) return r;
+    const first = firstRecord(sources, id);
+    for (const key of ["title", "pages", "sheets", "pdf_created", "pdf_modified"]) if (first?.[key] !== undefined) r[key] = first[key];
+    if (first?.files) r.files = first.files;
+    return r;
   });
+  return brief(b, record);
 }
 
 /** Save the open web page as a source; `how` carries the provenance of a page acquired by URL or link. */
@@ -149,37 +168,27 @@ async function savePage(b, p, how = {}) {
   const title = await p.title();
   const digest = sha256(Buffer.from(html));
   const id = `h${digest.slice(0, 10)}`;
-  return inSaveDir(b.saveDir, async () => {
-    const dir = join(sources, id);
-    const files = { original: `sources/${id}/original.html`, text: `sources/${id}/text.txt`, image: `sources/${id}/page.png` };
-    const event = existsSync(dir) ? "acquired_again" : "acquired";
-    let imageError = null;
-    if (event === "acquired") {
-      // A failed image must not leave the saved text unregistered: the page is saved and registered without it.
-      await assemble(sources, dir, async (staging) => {
-        writeFileSync(join(staging, "original.html"), html, { flag: "wx" });
-        writeFileSync(join(staging, "text.txt"), text, { flag: "wx" });
-        const height = await p.evaluate(() => document.documentElement.scrollHeight);
-        if (height > PAGE_IMAGE_MAX_PX) {
-          imageError = `the page is ${height} px tall, over the ${PAGE_IMAGE_MAX_PX} px image limit`;
-          return;
-        }
-        try {
-          await p.screenshot({ path: join(staging, "page.png"), fullPage: true, timeout: screenshotLimit() });
-        } catch (error) {
-          rmSync(join(staging, "page.png"), { force: true });
-          imageError = String(error.message || error).split("\n")[0];
-        }
-      });
+  // A failed image must not leave the saved text unregistered: the page is saved and registered without it.
+  const record = await save(b, sources, id, async (staging) => {
+    writeFileSync(join(staging, "original.html"), html, { flag: "wx" });
+    writeFileSync(join(staging, "text.txt"), text, { flag: "wx" });
+    const height = await p.evaluate(() => document.documentElement.scrollHeight);
+    if (height > PAGE_IMAGE_MAX_PX) return { image_error: `the page is ${height} px tall, over the ${PAGE_IMAGE_MAX_PX} px image limit` };
+    try {
+      await p.screenshot({ path: join(staging, "page.png"), fullPage: true, timeout: screenshotLimit() });
+      return {};
+    } catch (error) {
+      rmSync(join(staging, "page.png"), { force: true });
+      return { image_error: String(error.message || error).split("\n")[0] };
     }
-    if (!existsSync(join(dir, "page.png"))) delete files.image;
-    const record = { source_id: id, event, kind: "html", sha256: digest, bytes: Buffer.byteLength(html), retrieved_at: now(),
-      requested_url: url, final_url: url, redirects: [], mime: "text/html", title, parent_url: null, files,
-      ...(imageError ? { image_error: imageError } : {}), ...how };
-    register(sources, record);
-    return { ...brief(b, record), hint: files.image ? "cite text.txt quotes; page.png is the rendered page"
-      : "cite text.txt quotes; no page image was saved (the page was too tall or too slow to render)" };
+  }, (event, filled) => {
+    const files = { original: `sources/${id}/original.html`, text: `sources/${id}/text.txt`, image: `sources/${id}/page.png` };
+    if (!existsSync(join(sources, id, "page.png"))) delete files.image;
+    return { source_id: id, event, kind: "html", sha256: digest, bytes: Buffer.byteLength(html), retrieved_at: now(),
+      requested_url: url, final_url: url, redirects: [], mime: "text/html", title, parent_url: null, files, ...filled, ...how };
   });
+  return { ...brief(b, record), hint: record.files.image ? "cite text.txt quotes; page.png is the rendered page"
+    : "cite text.txt quotes; no page image was saved (the page was too tall or too slow to render)" };
 }
 
 /**
