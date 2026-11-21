@@ -179,11 +179,17 @@ test("documents and downloads a script causes are saved, with their source_id in
   assert.match(r.data.browser.downloads[0].source_id, /^s[0-9a-f]{10}$/);
   assert.equal(registry(dir).find((x) => x.source_id === r.data.browser.downloads[0].source_id).via, "download");
 
-  // After the console attached, a browse click's download is still saved.
-  const o = await call("browse", { browser: b, action: "observe", query: "Quarterly" });
-  const ref = /\[ref=(e\d+)\]/.exec(o.text.split("\n").find((l) => l.includes('link "Quarterly results"')))[1];
-  const atomic = await call("browse", { browser: b, action: "click", ref });
-  assert.match(atomic.data.downloads[0].source_id, /^s[0-9a-f]{10}$/);
+  // After the console attached, and after its child died, a browse click's download is still saved.
+  const browseDownload = async () => {
+    const o = await call("browse", { browser: b, action: "observe", query: "Quarterly" });
+    const ref = /\[ref=(e\d+)\]/.exec(o.text.split("\n").find((l) => l.includes('link "Quarterly results"')))[1];
+    const atomic = await call("browse", { browser: b, action: "click", ref });
+    assert.equal(atomic.error, false, atomic.text);
+    assert.match(atomic.data.downloads[0].source_id, /^s[0-9a-f]{10}$/);
+  };
+  await browseDownload();
+  assert.equal((await run(b, "process.exit(3)")).error, true);
+  await browseDownload();
 }));
 
 test("a script over its limit is stopped, its browser killed and restarted; the handle works after; another browser is not held up", { timeout: 180_000 }, async () => {

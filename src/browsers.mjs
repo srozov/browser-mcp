@@ -134,7 +134,7 @@ export function start({ profile: name, saveDir = null } = {}) {
   if (!named) cpSync(config.baseProfile, profile, { recursive: true, filter: (src) => !/^Singleton/.test(src.split("/").pop()) });
   const b = { handle, profile, named: named ? name : null, saveDir, downloads: [], downloadsPath: join(config.downloads, handle), log: join(config.logs, `${handle}.jsonl`), xvfb: null, proxy: null, lastRefusal: null, context: null, starting: null,
     retiring: Promise.resolve(), tabs: new Map(), current: null, front: null, tabCount: 0, lastGood: new WeakMap(), opened: [], documents: new WeakMap(), refusedNavigation: null,
-    endpoint: null, pid: null, console: null, links: new WeakMap(), linkCapture: new WeakMap(),
+    endpoint: null, pid: null, cdp: null, console: null, links: new WeakMap(), linkCapture: new WeakMap(),
     queue: Promise.resolve(), lastUsed: Date.now(), busy: 0, closed: false };
   table.set(handle, b);
   log(b, { type: "registered", ...(b.named ? { profile: b.named } : {}) });
@@ -241,10 +241,11 @@ export async function ensureBrowser(b) {
       const [port] = readFileSync(join(b.profile, "DevToolsActivePort"), "utf8").split("\n");
       const session = await context.browser().newBrowserCDPSession();
       const { processInfo } = await session.send("SystemInfo.getProcessInfo");
-      await session.detach();
       b.pid = processInfo.find((p) => p.type === "browser")?.id;
       if (!b.pid || !/^\d+$/.test(port)) throw new Error("no debugging port or browser PID");
       b.endpoint = `http://127.0.0.1:${port}`;
+      // Kept open: the console sets the download behaviour back through it when its child dies (console.mjs).
+      b.cdp = session;
     } catch (error) {
       await context.close().catch(() => {});
       throw new Error(`the browser started without its console endpoint: ${error.message}`);
@@ -279,6 +280,7 @@ export function resetBrowser(b, reason) {
   b.front = null;
   b.endpoint = null;
   b.pid = null;
+  b.cdp = null;
   b.console?.stop();
   b.console = null;
   log(b, { type: "browser_reset", reason });

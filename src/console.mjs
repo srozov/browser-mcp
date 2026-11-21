@@ -84,6 +84,8 @@ function startConsole(b) {
   for (const stream of ["stdout", "stderr"]) child[stream].on("data", (data) => log(b, { type: "console_output", stream, text: String(data) }));
   let pending = null;
   let failure = null;
+  let stopped = false;
+  let restored = Promise.resolve();
   let ok;
   let refused;
   const ready = new Promise((resolve, reject_) => {
@@ -113,12 +115,22 @@ function startConsole(b) {
     } else call?.resolve(m.result);
   });
   child.on("error", fail);
-  child.on("exit", (code, signal) => fail(new Error(`the console's process ended (${signal ?? `code ${code}`}); the next call starts a new one`)));
+  child.on("exit", (code, signal) => {
+    fail(new Error(`the console's process ended (${signal ?? `code ${code}`}); the next call starts a new one`));
+    // Its CDP connection set Chrome's download behaviour, and ending it put Chrome's default back: a download would go
+    // to the user's own download directory and never finish here. Unless the daemon stopped it with its browser, set
+    // the daemon's back.
+    if (!stopped) restored = b.cdp?.send("Browser.setDownloadBehavior", { behavior: "allowAndName", downloadPath: b.downloadsPath, eventsEnabled: true })
+      .catch((error) => log(b, { type: "console_error", error: `the download behaviour was not set back: ${error.message}` }));
+  });
   child.send({ endpoint: b.endpoint, downloadsPath: b.downloadsPath });
   return {
     ready,
     get failed() {
       return failure !== null;
+    },
+    get restored() {
+      return restored;
     },
     run(call) {
       if (failure) return Promise.reject(failure);
@@ -127,7 +139,10 @@ function startConsole(b) {
         child.send(call);
       });
     },
-    stop: () => child.kill("SIGKILL"),
+    stop: () => {
+      stopped = true;
+      child.kill("SIGKILL");
+    },
   };
 }
 
@@ -209,6 +224,7 @@ export async function evaluate(b, code, callState) {
   }
   // Over the limit, the daemon kills this browser: nothing here may act on it, or on the one that replaces it.
   if (callState.cancelled) throw new Error("the console call was stopped");
+  await running.restored; // a child that died: the downloads its script caused finish only after this
   const browser = await reconcile(b, p, before, tabsBefore);
   if (failure) {
     const error = new Error(failure.message.slice(0, ERROR_CHARS));
