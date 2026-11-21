@@ -38,12 +38,16 @@ reading a news article"), never by the private project it came from.
   3. `npx @modelcontextprotocol/inspector`, transport Streamable HTTP, URL `http://127.0.0.1:<port>/mcp`;
   4. `start`, `browse open` on a page, `browse text`, `browse observe`, `browse click` on a link's ref from it,
      `browse tabs`, `browse screenshot` (an image), `browse open http://127.0.0.1:<port>/mcp` (fails
-     `is blocked (private_host)`), `close`; `start {profile: "a"}`, `browse open`, a second
+     `is blocked (private_host)`), `acquire {current_page: true}` (fails naming `save_dir`), `close`;
+     `start {save_dir: <an empty directory under /tmp>}`, `browse open` on a page, `acquire {current_page: true}`,
+     `acquire {url}` of a public PDF (its `pages/0001.txt` and `0001.png` are under `<save_dir>/sources/<id>/`),
+     the same `acquire {url}` again ("already acquired"), `close`; `start {profile: "a"}`, `browse open`, a second
      `start {profile: "a"}` fails naming the first, `close`; then `search` on a query and
      `news_search` on a query and a recent day range, with no `start`;
   5. stop the daemon with Ctrl-C;
   6. check that `pgrep -f <state dir>` prints nothing, no Xvfb of its own is left, `<state dir>/profiles` is
-     empty, `pgrep -f <profile root>` prints nothing, and `<profile root>/a` is still there; `ss -ltn` shows no
+     empty, `pgrep -f <profile root>` prints nothing, `<profile root>/a` is still there, and the save_dir holds
+     only `sources/`; `ss -ltn` shows no
      listener of the daemon's left (its port and its browsers' proxies).
 
   When the daemon changes, the change updates this section with it.

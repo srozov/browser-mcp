@@ -6,7 +6,8 @@ passes it to every other call, so concurrent agents never see, lose or wait for 
 
 ## Prerequisites
 
-Node 24, Google Chrome and Xvfb.
+Node 24, Google Chrome, Xvfb and poppler (`pdftotext`, `pdftoppm`, `pdfinfo`; Debian's `poppler-utils`), which
+`acquire` uses for a PDF's page texts and images.
 
 ## Install
 
@@ -65,12 +66,14 @@ A client's MCP config:
 
 Tools:
 
-- `start {profile?}`: a browser of your own; returns `{browser}`. With `profile` it runs on that named profile; while
-  its browser is open a second `start` on it fails at once, naming the holder. At most 4 run at once; at the cap it
-  fails at once.
+- `start {profile?, save_dir?}`: a browser of your own; returns `{browser}`. With `profile` it runs on that named
+  profile; while its browser is open a second `start` on it fails at once, naming the holder. At most 4 run at once;
+  at the cap it fails at once. `save_dir` is where `acquire` saves: an absolute path to an existing, writable
+  directory, checked here; the daemon writes there only under `sources/`. Without it nothing is saved.
   Chrome launches on the first `browse`.
 - `browse {browser, action, ...}`, on the browser's current tab. A call over its 120 s limit fails and restarts
-  that browser, which keeps its cookies. Documents (PDF, spreadsheets) are not read yet. The actions:
+  that browser, which keeps its cookies. Documents (PDF, spreadsheets) are not read here: `open` of one goes back to
+  the page it was on and says to acquire it. The actions:
   - `open {url}`: open a web page;
   - `observe`: the page's accessibility outline, each element a line with a ref (`[ref=e12]`), at most 6000
     characters; `observe {query, page?}`: the lines holding every word of the query, each with its path;
@@ -86,8 +89,21 @@ Tools:
   An action takes only its own arguments; any other is refused by name. A ref that is malformed or no longer on
   the page fails with "observe again". A click, select or type that stays on the page replies with the lines
   that changed; one that navigates, even a moment later, replies with the new page. A new tab it opens becomes
-  the current tab and is reported; one to a refused address, or showing a document, is closed. A click that
-  another element covers (a cookie banner) fails, saying to dismiss it; nothing is clicked through it.
+  the current tab and is reported; one to a refused address is closed. A document a click opens in a new tab, or
+  downloads, is saved by code and reported with that reply (`downloads`), or with the next call
+  (`downloads_finished_since_last_call`) when it finishes later; without a `save_dir` it is reported as not saved.
+  A click that another element covers (a cookie banner) fails, saying to dismiss it; nothing is clicked through it.
+- `acquire {browser, url | ref | current_page}`: save a document, an observed link's target or the open page into
+  `<save_dir>/sources/<source_id>/`. A document is fetched with the browser's request client, each redirect hop
+  checked by the source policy; a host that refuses that client (403) is fetched through the browser. A web page is
+  opened and saved as `original.html`, `text.txt` and `page.png` (no image above 40,000 px or when it times out). A
+  PDF is kept as `original.pdf` with `pages/NNNN.txt` and `pages/NNNN.png` per page; an xlsx as `original.xlsx`
+  with one `pages/NNNN.txt` per sheet in workbook order. The reply gives the source_id, the files' paths, the final
+  URL, the parent page and the publication evidence (HTTP `Last-Modified`, the PDF's dates, the link's context).
+  Source ids come from the content's hash: the same bytes keep their source_id. `sources/registry.jsonl` gets a
+  line per save, with the provenance: requested and final URL, redirects, parent page, link text and context, fetch
+  time and hash. Saves into one `save_dir` run one at a time, so several browsers can share it. 6-minute limit; a call
+  over it fails without restarting the browser.
 - `close {browser}`: ends the browser. A throwaway profile copy is deleted; a named profile stays.
 - `search {query}`: up to 10 web results (title, url, snippet, date) through MiniMax; 30 s limit; no browser.
 - `news_search {query, from, to, edition?}`: Google News headlines in the day range, newest first, at most 50,
