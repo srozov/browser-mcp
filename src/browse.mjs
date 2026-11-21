@@ -80,15 +80,16 @@ async function checkedPage(b, p) {
 }
 
 /**
- * A blocked navigation leaves Chrome on its error page: go back to the page it came from, so the agent
- * keeps its place, and say what was blocked. Anything else that is not a public page fails.
+ * A blocked navigation leaves Chrome on its error page, or, for a plain-http redirect hop, on the proxy's
+ * refusal shown at the refused URL (the proxy served nothing from it): go back to the page it came from, so
+ * the agent keeps its place, and say what was blocked. Anything else that is not a public page fails.
  */
 async function recover(b, p) {
   const url = await currentUrl(p);
   if (isPublicPage(url)) return null;
-  const blocked = b.refusedNavigation;
+  const blocked = url.startsWith("chrome-error:") ? b.refusedNavigation : /^https?:/i.test(url) ? { url, reason: reject(url) } : null;
   const previous = b.lastGood.get(p);
-  if (url.startsWith("chrome-error:") && blocked && previous) {
+  if (blocked && previous) {
     await p.goto(previous, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS }).catch(() => {});
     await settle(p);
     if (isPublicPage(p.url())) return `navigation to ${blocked.url} was blocked (${blocked.reason}); reopened ${p.url()}`;

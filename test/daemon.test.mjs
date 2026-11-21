@@ -460,6 +460,12 @@ test("a popup to a public host opens as a new tab and is reported; a JS navigati
   assert.equal(js.error, false, js.text);
   assert.match(js.text, /navigation to http:\/\/10\.9\.9\.9\/js was blocked \(private_host\); reopened http:\/\/ir\.issuer\.test\/investors/);
   assert.equal((await browse(c, b, { action: "tabs" })).text, `t1 (current) ${ISSUER}/investors\nt2 ${ISSUER}/reports`);
+  // A link whose plain-http redirect hop the proxy refuses: the tab goes back too, not to about:blank.
+  await browse(c, b, { action: "open", url: `${ISSUER}/reports` });
+  const moved = await browse(c, b, { action: "observe", query: "moved report" });
+  const hop = await browse(c, b, { action: "click", ref: refOf(moved.text, `link "Download pdf"`) });
+  assert.equal(hop.error, false, hop.text);
+  assert.match(hop.text, /navigation to http:\/\/10\.9\.9\.9\/stolen\.pdf was blocked \(private_host\); reopened http:\/\/ir\.issuer\.test\/reports/);
   assert.deepEqual(leaked(["10.9.9.9"]), []);
 }));
 
