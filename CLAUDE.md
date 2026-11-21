@@ -36,7 +36,8 @@ reading a news article"), never by the private project it came from.
      `BROWSER_STATE_DIR` (a directory under `/tmp`), `BROWSER_PROFILE_ROOT` (a directory under `/tmp` with an
      empty subdirectory `a`) and `BROWSER_MINIMAX_KEY` (a real MiniMax key);
   3. `npx @modelcontextprotocol/inspector`, transport Streamable HTTP, URL `http://127.0.0.1:<port>/mcp`;
-  4. `start`, `browse open` on a page, `browse text`, `browse open http://127.0.0.1:<port>/mcp` (fails
+  4. `start`, `browse open` on a page, `browse text`, `browse observe`, `browse click` on a link's ref from it,
+     `browse tabs`, `browse screenshot` (an image), `browse open http://127.0.0.1:<port>/mcp` (fails
      `is blocked (private_host)`), `close`; `start {profile: "a"}`, `browse open`, a second
      `start {profile: "a"}` fails naming the first, `close`; then `search` on a query and
      `news_search` on a query and a recent day range, with no `start`;
