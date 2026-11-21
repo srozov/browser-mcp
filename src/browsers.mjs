@@ -1,14 +1,16 @@
 // The browser table: one headed Chrome per handle, each with its own Xvfb display, its own copy of the base
 // profile, its own tabs and its own call queue. The launch, reset, cleanup, time limit and audit log are
 // moved from the page readers' browser server, where they were the state of one process; here they are
-// fields of an entry. So are the request guard and the rejection log (moved), and the policy proxy (new,
-// proxy.mjs). Calls with different handles share nothing: no module-level browser state.
+// fields of an entry. So are the request guard and the rejection log (moved), the policy proxy (new,
+// proxy.mjs) and the downloads a page starts (moved; acquire.mjs saves them). Calls with different handles share
+// nothing: no module-level browser state.
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, cpSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "patchright";
+import { saveDownload } from "./acquire.mjs";
 import { isDocumentType, refuse, systemLookup } from "./policy.mjs";
 import { profilePath } from "./profiles.mjs";
 import { startProxy } from "./proxy.mjs";
@@ -16,6 +18,8 @@ import { startProxy } from "./proxy.mjs";
 const MAX_BROWSERS = 4;
 const IDLE_MS = 10 * 60_000;
 const CALL_LIMIT_MS = 120_000;
+// A full-page image of a very long page can outrun this; the page is saved without it.
+const SCREENSHOT_MS = 30_000;
 const LOG_KEEP_MS = 30 * 24 * 3_600_000;
 // The close of the browser resetBrowser last dropped: its Chrome holds the profile's lock until it exits, and a launch
 // on a locked profile fails at once. A launch waits for it, at most RETIRE_MS.
@@ -29,9 +33,9 @@ const now = () => new Date().toISOString();
 
 /** Called once by the daemon. Clones and old logs left by a dead daemon are deleted here. */
 /** `proxy` is the fixture proxy of the offline tests: the policy proxy's upstream. `lookup` resolves names for the policy. */
-export function configure({ baseProfile, profileRoot, stateDir, proxy, lookup, callLimitMs, idleMs }) {
+export function configure({ baseProfile, profileRoot, stateDir, proxy, lookup, callLimitMs, idleMs, screenshotMs }) {
   config = { baseProfile, profileRoot, profiles: join(stateDir, "profiles"), logs: join(stateDir, "logs"), upstream: proxy, lookup: lookup ?? systemLookup,
-    callLimitMs: callLimitMs ?? CALL_LIMIT_MS, idleMs: idleMs ?? IDLE_MS };
+    callLimitMs: callLimitMs ?? CALL_LIMIT_MS, idleMs: idleMs ?? IDLE_MS, screenshotMs: screenshotMs ?? SCREENSHOT_MS };
   // Every clone belongs to a dead daemon (one daemon per state directory). Its Chrome and Xvfb are
   // killed by systemd's control-group kill, not here.
   rmSync(config.profiles, { recursive: true, force: true });
@@ -56,6 +60,9 @@ export function log(b, event) {
 
 /** The lookup the source policy uses, for `open`. */
 export const policyLookup = () => config.lookup;
+
+/** The time a saved page's image may take, for acquire. */
+export const screenshotLimit = () => config.screenshotMs;
 
 /** A refused request, in the browser's own log; `open` reads `lastRefusal` to say what a redirect hop hit. */
 export function rejected(b, via, url, reason, address) {
@@ -96,9 +103,9 @@ export function searchLog(event) {
 /**
  * A browser of one's own: a handle and, without a name, a copy of the base profile; with one, the named profile
  * itself. A named browser holds its profile while it is in the table or in `closing`: there is no lock file.
- * Chrome launches on the first call.
+ * `saveDir` (checked by the daemon) is where acquire saves. Chrome launches on the first call.
  */
-export function start({ profile: name } = {}) {
+export function start({ profile: name, saveDir = null } = {}) {
   const named = name === undefined ? null : profilePath(config.profileRoot, name);
   if (named) {
     // Never the full handle: a second caller must not get a working handle to another caller's browser.
@@ -117,7 +124,7 @@ export function start({ profile: name } = {}) {
   const handle = randomBytes(12).toString("base64url");
   const profile = named ?? join(config.profiles, handle);
   if (!named) cpSync(config.baseProfile, profile, { recursive: true, filter: (src) => !/^Singleton/.test(src.split("/").pop()) });
-  const b = { handle, profile, named: named ? name : null, log: join(config.logs, `${handle}.jsonl`), xvfb: null, proxy: null, lastRefusal: null, context: null, starting: null,
+  const b = { handle, profile, named: named ? name : null, saveDir, downloads: [], log: join(config.logs, `${handle}.jsonl`), xvfb: null, proxy: null, lastRefusal: null, context: null, starting: null,
     retiring: Promise.resolve(), tabs: new Map(), current: null, front: null, tabCount: 0, lastGood: new WeakMap(), opened: [], documents: new WeakMap(), refusedNavigation: null,
     queue: Promise.resolve(), lastUsed: Date.now(), busy: 0, closed: false };
   table.set(handle, b);
@@ -154,6 +161,11 @@ function addTab(b, page) {
   const id = `t${++b.tabCount}`;
   b.tabs.set(id, page);
   page.on("close", () => b.tabs.delete(id));
+  // Saved by code; the action that caused it, or the next call, reports it.
+  page.on("download", (download) => {
+    log(b, { type: "download_started", url: download.url(), tab: id });
+    b.downloads.push(saveDownload(b, download, page.url()));
+  });
   // The document a tab's main frame shows (Chrome's PDF viewer): the after-action step closes such a new tab.
   page.on("response", (r) => {
     if (r.frame() === page.mainFrame() && r.request().isNavigationRequest()) {
@@ -193,6 +205,7 @@ export async function ensureBrowser(b) {
       env: { ...process.env, DISPLAY: b.xvfb.display },
       viewport: { width: 1280, height: 1000 },
       serviceWorkers: "block",
+      acceptDownloads: true,
       // Upstream Playwright disables the back-forward cache and patchright does not: a page restored from it
       // never fires its load events again, so back would wait out its time limit.
       args: ["--no-first-run", "--disable-session-crashed-bubble", "--password-store=basic",

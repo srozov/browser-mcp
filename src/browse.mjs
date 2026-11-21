@@ -2,15 +2,17 @@
 // server. They take the entry `b` (see browsers.mjs) instead of module state, so a browser's tabs, refs and
 // outline are its own. The refusal at the top of `open` is moved from the readers' server, with the
 // resolved-address check added; so is the one before a click on a link. The page model is snapshot.mjs (moved).
-// A styled checkbox is ticked through its own label only, never through an overlay (new). Saving documents and
-// the console arrive with later tickets.
+// A styled checkbox is ticked through its own label only, never through an overlay (new). A document a click opens
+// in a new tab, or downloads, is saved by code (acquire.mjs), as the readers' after-action step did. The console
+// arrives with a later ticket.
 
 import { errors } from "patchright";
+import { saveTabDocument } from "./acquire.mjs";
 import { policyLookup, rejected } from "./browsers.mjs";
 import { isDocumentType, refuse, reject } from "./policy.mjs";
 import { diff, outline, paged, parse, query, subtree, target } from "./snapshot.mjs";
 
-const NAV_TIMEOUT_MS = 60_000;
+export const NAV_TIMEOUT_MS = 60_000;
 const TEXT_PAGE = 6000;
 const CHANGE_CHARS = 1500; // lines that appeared, shown in an in-place action's reply
 
@@ -30,7 +32,7 @@ function tabId(b, p) {
   return null;
 }
 
-async function settle(p) {
+export async function settle(p) {
   try {
     await p.waitForLoadState("domcontentloaded", { timeout: NAV_TIMEOUT_MS });
     await p.waitForLoadState("networkidle", { timeout: 5000 });
@@ -38,7 +40,7 @@ async function settle(p) {
   await p.waitForTimeout(800);
 }
 
-async function visibleText(p) {
+export async function visibleText(p) {
   // A select shows as its chosen option and its size, not every option: a long option list filled the
   // first text page. observe lists and searches its options.
   return p.evaluate(() => {
@@ -64,7 +66,7 @@ async function currentUrl(p) {
 }
 
 /** Content leaves the browser only from a public http(s) page; anything else is closed and logged. */
-async function checkedPage(b, p) {
+export async function checkedPage(b, p) {
   const url = await currentUrl(p);
   // A fresh tab, or one sent back after a document: say so, not "ended on about:blank" (agents called
   // text with a url and read that as a blocked page).
@@ -114,11 +116,11 @@ async function summary(b, p, extra = {}) {
   };
 }
 
-const blockedText = (url, refusal) => `${url} is blocked (${refusal.reason}${refusal.address ? ` ${refusal.address}` : ""})`;
+export const blockedText = (url, refusal) => `${url} is blocked (${refusal.reason}${refusal.address ? ` ${refusal.address}` : ""})`;
 
 /**
- * Open a URL in the tab. One that serves a document is not a page: the tab goes back to the page it
- * was on, so the agent keeps its place.
+ * Open a URL in the tab. A URL that downloads is saved; one that serves a document is not a page: the tab goes back
+ * to the page it was on, so the agent keeps its place, and the call says to acquire it.
  */
 export async function open(b, url) {
   // `refuse` lets a page's inline data: and blob: requests through; `open` takes http(s) only, as the readers' did.
@@ -156,10 +158,12 @@ export async function open(b, url) {
     await p.goto(previous ?? "about:blank", { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS }).catch(() => {});
     throw new Error(`${blocked}${previous ? `; the tab is back on ${previous}` : ""}`);
   }
-  if (download || (response && isDocumentType(response.headers()["content-type"]))) {
+  const done = await Promise.all(b.downloads.splice(0));
+  if (download || done.length) return { downloads: done, note: "the URL was a download, not a page" };
+  if (response && isDocumentType(response.headers()["content-type"])) {
     const previous = b.lastGood.get(p);
     await p.goto(previous ?? "about:blank", { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS }).catch(() => {});
-    throw new Error(`${url} is a document, not a page: documents are not read yet${previous ? `; the tab is back on ${previous}` : ""}`);
+    throw new Error(`${url} is a document, not a page: save it with acquire {url}${previous ? `; the tab is back on ${previous}` : ""}`);
   }
   await settle(p);
   return summary(b, p);
@@ -186,7 +190,7 @@ function checkRef(ref) {
 const stale = (ref) => new Error(`ref ${ref} is not on the page now (it changed or reloaded); observe again`);
 
 /** An element of the current tab by its ref, looked up in a fresh snapshot (refs stay while the element does). */
-async function element(b, ref) {
+export async function element(b, ref) {
   checkRef(ref);
   const p = await page(b);
   const { url, root } = await model(b, p);
@@ -281,8 +285,11 @@ function navigation(b, p) {
   ]).catch(() => null);
 }
 
-/** The tabs an action opened: a public page becomes the current tab; a blocked one, or a document, is closed. */
-async function newTabs(b) {
+/**
+ * The tabs an action opened: a public page becomes the current tab; a blocked one is closed; a document one is saved
+ * by code, with the clicked link's text and context, and closed.
+ */
+async function newTabs(b, p, info) {
   const extra = {};
   for (const id of b.opened.splice(0)) {
     const tab = b.tabs.get(id);
@@ -295,9 +302,9 @@ async function newTabs(b) {
     const shows = b.documents.has(tab) ? null : await Promise.race([tab.evaluate(() => document.contentType),
       new Promise((ok) => setTimeout(ok, 2000, ""))]).catch(() => "");
     const doc = b.documents.get(tab) ?? (isDocumentType(shows) ? tab.url() : null);
-    if (doc) {
-      // #9 saves it here.
-      extra.closed_new_tab = `a new tab showed the document ${doc}: documents are not read yet`;
+    if (doc && isPublicPage(doc)) {
+      const opener = await tab.opener().catch(() => null) ?? p;
+      b.downloads.push(saveTabDocument(b, doc, { parent_url: opener.url(), link_text: info.name ?? null, link_context: info.context ?? null }));
       await tab.close().catch(() => {});
       continue;
     }
@@ -317,11 +324,13 @@ async function newTabs(b) {
   return extra;
 }
 
-/** After a click, select or type: new tabs, then the new page, or the lines that changed in place. */
-async function afterAction(b, p, before, moved, rootBefore) {
+/** After a click, select or type: new tabs and downloads, then the new page, or the lines that changed in place. */
+async function afterAction(b, p, before, moved, rootBefore, info = {}) {
   await moved;
   if (!p.isClosed()) await settle(p);
-  const extra = await newTabs(b);
+  const extra = await newTabs(b, p, info);
+  const done = await Promise.all(b.downloads.splice(0));
+  if (done.length) extra.downloads = done;
   const active = await page(b);
   const changed = active !== p || active.url() !== before;
   if (changed) return summary(b, active, { ...extra, changed });
@@ -354,7 +363,7 @@ export async function click(b, ref) {
   const moved = navigation(b, p);
   if (["checkbox", "radio", "switch"].includes(info.role)) await toggle(p, locator);
   else await covered(() => locator.click({ timeout: 10_000 }));
-  return afterAction(b, p, before, moved, root);
+  return afterAction(b, p, before, moved, root, info);
 }
 
 export async function select(b, ref, value) {
