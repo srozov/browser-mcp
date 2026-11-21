@@ -330,6 +330,187 @@ test("text reads in pages; a select shows as its chosen option and size", async 
   await call(c, "close", { browser: b });
 });
 
+/** A test's own browser, closed however the test ends: a leaked one would count against the cap in later tests. */
+async function withBrowser(fn) {
+  const c = await client(main.url);
+  const b = await start(c);
+  try {
+    await fn(c, b);
+  } finally {
+    await call(c, "close", { browser: b });
+  }
+}
+
+/** The ref of the first observe line holding text (a query line's own ref, not its path's). */
+const refOf = (listing, text) => /\[ref=(e\d+)\]/.exec(listing.split("\n").find((l) => l.includes("[ref=") && l.includes(text)) ?? "")?.[1];
+
+test("observe outlines the page with refs; a query keeps each hit's path; a ref expands one part", () => withBrowser(async (c, b) => {
+  await browse(c, b, { action: "open", url: `${ISSUER}/reports` });
+  const r = await browse(c, b, { action: "observe" });
+  assert.equal(r.error, false, r.text);
+  assert.match(r.text, /heading "Reports" \[level=1\] \[ref=e\d+\]/);
+  assert.match(r.text, /combobox \(label "Report archive"\) \[ref=e\d+\]: 2 options, selected "2026"/);
+  assert.match(r.text, /text: 2025 Annual Report \(published 3 March 2026\)\n\s+link "Download pdf" \[ref=e\d+\] -> http:\/\/cdn\.shared\.test\/space1\/ar-2025\.pdf/);
+  const q = await browse(c, b, { action: "observe", query: "ar-2025" });
+  assert.match(q.text, /1 lines match "ar-2025"/);
+  assert.match(q.text, /main \[e\d+\] > list \[e\d+\] > listitem \[e\d+\] > link "Download pdf" \[ref=e\d+\]/);
+  assert.doesNotMatch(q.text, /ar-2024/);
+  const list = /list \[ref=(e\d+)\]/.exec(r.text)[1];
+  const part = await browse(c, b, { action: "observe", ref: list });
+  assert.match(part.text, /ref e\d+ in main \[e\d+\], page 1 of 1\nlist \[ref=e\d+\]/);
+  assert.match(part.text, /Capital structure/);
+  assert.doesNotMatch(part.text, /Report archive/);
+  const none = await browse(c, b, { action: "observe", query: "dividend policy" });
+  assert.match(none.text, /nothing on the page matches "dividend policy"/);
+}));
+
+test("an action refuses arguments it does not take, naming them; a malformed or stale ref says observe again", () => withBrowser(async (c, b) => {
+  await browse(c, b, { action: "open", url: `${ISSUER}/reports` });
+  const r = await browse(c, b, { action: "observe", url: `${ISSUER}/reports` });
+  assert.equal(r.error, true);
+  assert.match(r.text, /observe takes query, ref, page, not url: open the url first, then observe/);
+  assert.match((await browse(c, b, { action: "click", ref: "e1", value: "x" })).text, /click takes ref, not value/);
+  assert.match((await browse(c, b, { action: "tabs", page: 2 })).text, /tabs takes nothing, not page/);
+  assert.match((await browse(c, b, { action: "click" })).text, /click needs ref/);
+  const bad = await browse(c, b, { action: "click", ref: "12" });
+  assert.equal(bad.error, true);
+  assert.match(bad.text, /\\"12\\" is not a ref: refs look like e12 and come from observe; observe again/);
+  const gone = await browse(c, b, { action: "click", ref: "e9999" });
+  assert.equal(gone.error, true);
+  assert.match(gone.text, /ref e9999 is not on the page now \(it changed or reloaded\); observe again/);
+  assert.match((await browse(c, b, { action: "observe", ref: "e9999" })).text, /observe again/);
+}));
+
+test("a register: banner, long select, styled checkbox, a date in parts, and results that arrive late", { timeout: 120_000 }, () => withBrowser(async (c, b) => {
+  await browse(c, b, { action: "open", url: "http://register.exchange.test/notices" });
+  const all = await browse(c, b, { action: "observe" });
+  assert.match(all.text, /combobox \(label "ISSUER"\) \[ref=e\d+\]: 62 options, selected "All"/);
+  assert.match(all.text, /checkbox "Current notices only" \[checked\] \[ref=e\d+\]/);
+  assert.match(all.text, /spinbutton "Year" \[ref=e\d+\]: 2026/);
+  assert.doesNotMatch(all.text, /Issuer 00 AG/);
+  const o = await browse(c, b, { action: "observe", query: "example widgets" });
+  assert.match(o.text, /combobox \(label "ISSUER"\) \[ref=e\d+\]: 62 options, selected "All"\n\s+matching options: "Example Widgets AG"/);
+  const select = refOf(o.text, "combobox");
+  const search = refOf(all.text, `button "Search"`);
+  const checkbox = refOf(all.text, `checkbox "Current notices only"`);
+  const blocked = await browse(c, b, { action: "click", ref: search });
+  assert.equal(blocked.error, true);
+  assert.match(blocked.text, /another element \(consent-banner\) covers it, often a cookie or consent banner/);
+  const through = await browse(c, b, { action: "click", ref: refOf(all.text, `checkbox "Include archived"`) });
+  assert.equal(through.error, true, "a checkbox under the banner is not ticked through it");
+  assert.match(through.text, /another element \(consent-banner\) covers it/);
+  assert.equal((await browse(c, b, { action: "click", ref: refOf(all.text, "Accept All Cookies") })).error, false);
+  const near = await browse(c, b, { action: "select", ref: select, value: "issuer 0" });
+  assert.match(near.text, /issuer 0\\" names 10 options of e\d+: \\"Issuer 00 AG\\"/);
+  assert.equal((await browse(c, b, { action: "select", ref: select, value: "Example Widgets" })).error, false);
+  const untick = await browse(c, b, { action: "click", ref: checkbox });
+  assert.equal(untick.error, false, untick.text);
+  assert.match(untick.text, /checkbox \\"Current notices only\\" (\[active\] )?\[ref=e\d+\]"/);
+  // The year first, then the month, then the day; each part's ref from a fresh observe.
+  for (const [part, value] of [["Year", "2025"], ["Month", "9"], ["Day", "2"]]) {
+    const found = await browse(c, b, { action: "observe", query: part });
+    const typed = await browse(c, b, { action: "type", ref: refOf(found.text, `spinbutton "${part}"`), value });
+    assert.equal(typed.error, false, typed.text);
+    assert.match(typed.text, new RegExp(`spinbutton \\\\"${part}\\\\" (\\[active\\] )?\\[ref=e\\d+\\]: ${value}"`));
+  }
+  const searched = await browse(c, b, { action: "click", ref: search });
+  assert.equal(searched.error, false, searched.text);
+  assert.match(searched.text, /"page_changes": "\d+ lines appeared, \d+ disappeared"/);
+  assert.match(searched.text, /row \\"2025-09-03 Example Widgets AG Details\\" \[ref=e\d+\]/);
+  assert.match(searched.text, /row \\"2026-09-15 Example Widgets AG Details\\"/);
+  assert.doesNotMatch(searched.text, /Issuer 07 AG/);
+  assert.doesNotMatch(searched.text, /"text":/);
+  const rows = await browse(c, b, { action: "observe", query: "2025-09-03" });
+  assert.match(rows.text, /table "Results" \[e\d+\] > row "2025-09-03 Example Widgets AG Details" \[ref=e\d+\]\n {4}link "Details" \[ref=e\d+\] -> http:\/\/register\.exchange\.test\/notices#\/notice\/N1/);
+  assert.equal((await browse(c, b, { action: "click", ref: refOf(rows.text, `link "Details"`) })).error, false);
+  const detail = await browse(c, b, { action: "observe", query: "own shares" });
+  assert.match(detail.text, /region "Notice detail" \[e\d+\] > paragraph \[ref=e\d+\]: Example Widgets AG holds own shares 1,500,000/);
+  assert.match((await browse(c, b, { action: "text" })).text, /\[select: Example Widgets AG \(62 options\)\]/);
+}));
+
+test("a click that navigates a moment later is followed and reported as a new page; back returns", () => withBrowser(async (c, b) => {
+  await browse(c, b, { action: "open", url: `${ISSUER}/investors` });
+  const o = await browse(c, b, { action: "observe", query: "late reports" });
+  const r = await browse(c, b, { action: "click", ref: refOf(o.text, "Late reports link") });
+  assert.equal(r.error, false, r.text);
+  assert.match(r.text, /"url": "http:\/\/ir\.issuer\.test\/reports"/);
+  assert.match(r.text, /"changed": true/);
+  assert.match(r.text, /Report archive/);
+  assert.doesNotMatch(r.text, /page_changes/);
+  const back = await browse(c, b, { action: "back" });
+  assert.match(back.text, /"url": "http:\/\/ir\.issuer\.test\/investors"/);
+  assert.match((await browse(c, b, { action: "scroll" })).text, /Issuer results text/);
+}));
+
+test("a popup to a public host opens as a new tab and is reported; a JS navigation or a popup to a private host is blocked", () => withBrowser(async (c, b) => {
+  await browse(c, b, { action: "open", url: `${ISSUER}/investors` });
+  const o = await browse(c, b, { action: "observe" });
+  const tab = await browse(c, b, { action: "click", ref: refOf(o.text, "Reports in a new tab") });
+  assert.equal(tab.error, false, tab.text);
+  assert.match(tab.text, /"switched_to_new_tab": "t2"/);
+  assert.match(tab.text, /Report archive/);
+  assert.equal((await browse(c, b, { action: "tabs" })).text, `t1 ${ISSUER}/investors\nt2 (current) ${ISSUER}/reports`);
+  assert.match((await browse(c, b, { action: "switch_tab", tab: "t1" })).text, /Issuer results text/);
+  assert.match((await browse(c, b, { action: "switch_tab", tab: "t9" })).text, /no tab t9/);
+  const pop = await browse(c, b, { action: "click", ref: refOf(o.text, "Open viewer") });
+  assert.equal(pop.error, false, pop.text);
+  assert.match(pop.text, /"closed_new_tab": "a new tab to http:\/\/10\.9\.9\.9\/popup was blocked and closed"/);
+  const js = await browse(c, b, { action: "click", ref: refOf(o.text, "Open archive") });
+  assert.equal(js.error, false, js.text);
+  assert.match(js.text, /navigation to http:\/\/10\.9\.9\.9\/js was blocked \(private_host\); reopened http:\/\/ir\.issuer\.test\/investors/);
+  assert.equal((await browse(c, b, { action: "tabs" })).text, `t1 (current) ${ISSUER}/investors\nt2 ${ISSUER}/reports`);
+  assert.deepEqual(leaked(["10.9.9.9"]), []);
+}));
+
+/** Every file under dir, skipping what Chrome deletes while the walk runs. */
+function files(dir) {
+  let names;
+  try {
+    names = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return names.flatMap((e) => (e.isDirectory() ? files(join(dir, e.name)) : [join(dir, e.name)]));
+}
+
+test("screenshot returns an image in the reply and writes no file", () => withBrowser(async (c, b) => {
+  await browse(c, b, { action: "open", url: `${ISSUER}/reports` });
+  const images = () => files(root).filter((f) => /\.(png|jpe?g)$/i.test(f));
+  const before = images();
+  const r = await c.callTool({ name: "browse", arguments: { browser: b, action: "screenshot" } });
+  assert.ok(!r.isError, JSON.stringify(r.content));
+  assert.equal(r.content[0].type, "image");
+  assert.equal(r.content[0].mimeType, "image/png");
+  assert.deepEqual([...Buffer.from(r.content[0].data, "base64").subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47]);
+  assert.equal(r.content[1].text, `${ISSUER}/reports`);
+  assert.deepEqual(images(), before);
+}));
+
+test("two browsers at once never see each other's tabs, refs or outlines", { timeout: 120_000 }, async () => {
+  const c = await client(main.url);
+  const [a, b] = [await start(c), await start(c)];
+  try {
+    await Promise.all([browse(c, a, { action: "open", url: `${ISSUER}/investors` }), browse(c, b, { action: "open", url: `${ISSUER}/reports` })]);
+    const [oa, ob] = await Promise.all([browse(c, a, { action: "observe" }), browse(c, b, { action: "observe" })]);
+    assert.match(oa.text, /^http:\/\/ir\.issuer\.test\/investors\n/);
+    assert.doesNotMatch(oa.text, /Report archive/);
+    assert.match(ob.text, /^http:\/\/ir\.issuer\.test\/reports\n/);
+    assert.doesNotMatch(ob.text, /Open archive/);
+    // A opens the reports page too, in a new tab; B keeps its one tab.
+    assert.match((await browse(c, a, { action: "click", ref: refOf(oa.text, "Reports in a new tab") })).text, /"switched_to_new_tab": "t2"/);
+    assert.equal((await browse(c, b, { action: "tabs" })).text, `t1 (current) ${ISSUER}/reports`);
+    // B's ref acts on B's page only, though A shows the same page.
+    const chosen = await browse(c, b, { action: "select", ref: refOf(ob.text, "combobox"), value: "2025" });
+    assert.equal(chosen.error, false, chosen.text);
+    assert.match((await browse(c, b, { action: "observe" })).text, /combobox \(label "Report archive"\) \[ref=e\d+\]: 2 options, selected "2025"/);
+    assert.match((await browse(c, a, { action: "observe" })).text, /combobox \(label "Report archive"\) \[ref=e\d+\]: 2 options, selected "2026"/);
+    assert.equal((await browse(c, a, { action: "tabs" })).text, `t1 ${ISSUER}/investors\nt2 (current) ${ISSUER}/reports`);
+  } finally {
+    await call(c, "close", { browser: a });
+    await call(c, "close", { browser: b });
+  }
+});
+
 const PAGES = [["investors", "Issuer results text"], ["reports", "Report archive"],
   ["presentations", "Full-year results 2025 presentation"], ["date-search", "Disclosure search"]];
 let four;

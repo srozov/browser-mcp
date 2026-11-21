@@ -119,8 +119,9 @@ const PAGES = {
     <ul><li>Full-year results 2025 presentation (3 March 2026) <a href="/files/fy2025-presentation.pdf">PDF</a></li></ul>
     </main></body></html>`,
   // A register: a long issuer list behind a label, a styled checkbox (its input hidden in
-  // its label) that keeps only current notices, a year filter, a Search button whose results load late,
-  // a detail view per notice, and a consent banner over it all.
+  // its label, which stays above the banner) that keeps only current notices, a plain checkbox the banner covers,
+  // a from-date in parts (year, month, day), a Search button whose results load late, a detail view per notice,
+  // and a consent banner over it all.
   "register.exchange.test/notices": `<html><head><title>Notices</title>
     <style>.cb { position: relative; } .cb input { opacity: 0; position: absolute; left: 0; top: 0; }
       .cb span { position: relative; z-index: 1; padding-left: 20px; cursor: pointer; }</style></head>
@@ -129,8 +130,12 @@ const PAGES = {
       <div><span>ISSUER</span><select id="who"><option>All</option>
         ${Array.from({ length: 60 }, (_, i) => `<option>Issuer ${String(i).padStart(2, "0")} AG</option>`).join("")}
         <option>Example Widgets AG</option></select></div>
-      <div><span>From year</span><input type="number" id="from" value="2026"></div>
+      <fieldset><legend>From</legend>
+        <label>Year<input type="number" id="from-year" value="2026"></label>
+        <label>Month<input type="number" id="from-month" value="1"></label>
+        <label>Day<input type="number" id="from-day" value="1"></label></fieldset>
       <label class="cb" for="current"><input type="checkbox" id="current" readonly checked><span>Current notices only</span></label>
+      <label><input type="checkbox" id="archived"> Include archived</label>
       <button type="submit">Search</button></form>
     <table><caption>Results</caption><tbody id="out"></tbody></table>
     <section id="detail" aria-label="Notice detail"></section></main>
@@ -144,9 +149,10 @@ const PAGES = {
       ];
       document.getElementById("filter").onsubmit = (event) => {
         event.preventDefault();
-        const who = document.getElementById("who").value, from = Number(document.getElementById("from").value);
+        const who = document.getElementById("who").value;
+        const from = ["year", "month", "day"].map((part) => document.getElementById("from-" + part).value.padStart(2, "0")).join("-");
         const current = document.getElementById("current").checked;
-        const hits = notices.filter((n) => (who === "All" || n.issuer === who) && (!current || n.current) && Number(n.date.slice(0, 4)) >= from);
+        const hits = notices.filter((n) => (who === "All" || n.issuer === who) && (!current || n.current) && n.date >= from);
         setTimeout(() => {
           document.getElementById("out").innerHTML = hits.map((n) => '<tr><td>' + n.date + '</td><td>' + n.issuer +
             '</td><td><a href="#/notice/' + n.id + '">Details</a></td></tr>').join("") || '<tr><td>No results</td></tr>';
