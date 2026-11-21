@@ -252,9 +252,20 @@ export async function installLinkCapture(b, p) {
   const session = await b.context.newCDPSession(p);
   session.on("Runtime.bindingCalled", ({ name, payload }) => {
     if (name !== "__browserLinkClicked") return;
-    const link = JSON.parse(payload);
-    if (link) b.links.set(p, link);
-    else b.links.delete(p);
+    // The page's own scripts can call the binding too: a throw here would end the daemon, so a payload that is not a
+    // link is logged and dropped, and only a link's string fields are kept.
+    let link;
+    try {
+      link = JSON.parse(payload);
+    } catch {}
+    b.links.delete(p);
+    if (link === null) return;
+    if (typeof link !== "object" || Array.isArray(link)) {
+      log(b, { type: "link_capture_error", error: `the page sent a payload that is not a link: ${String(payload).slice(0, 200)}` });
+      return;
+    }
+    const text = (value) => (typeof value === "string" ? value : null);
+    b.links.set(p, { parent_url: text(link.parent_url), url: text(link.url), link_text: text(link.link_text), link_context: text(link.link_context) });
   });
   await session.send("Runtime.enable");
   await session.send("Page.enable");

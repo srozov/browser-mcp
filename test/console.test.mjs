@@ -264,6 +264,11 @@ test("caller code runs in a child process: not the daemon, without its key or en
   assert.equal(again.error, false, again.text);
   assert.notEqual(again.data.value.pid, who.data.value.pid);
   assert.equal(again.data.value.url, `${ISSUER}/reports`);
+  // A page's own script can call the link capture's binding: what it sends does not end the daemon.
+  const forged = await run(b, "await page.evaluate(() => { __browserLinkClicked('not json'); __browserLinkClicked('[1]'); }); return 'sent'");
+  assert.equal(forged.error, false, forged.text);
+  assert.equal((await call("browse", { browser: b, action: "text" })).error, false);
+  assert.equal(events(b).filter((e) => e.type === "link_capture_error").length, 2);
   const [port] = readFileSync(join(d.stateDir, "profiles", b, "DevToolsActivePort"), "utf8").split("\n");
   assert.ok(!replies.some((t) => t.includes(`:${port}`) || t.includes(KEY)), "no reply holds the endpoint or the key");
 }, { save: false }));
