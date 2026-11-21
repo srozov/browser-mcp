@@ -196,6 +196,8 @@ async function element(b, ref) {
 
 export async function observe(b, { query: q, ref, page: n }) {
   if (q && ref) throw new Error("observe takes a query or a ref, not both");
+  // The outline is cut, not paged: a page without a query or a ref would return the same outline as page 1.
+  if (n && !q && !ref) throw new Error("observe takes page only with a query or a ref; the outline is one view");
   const { url, root } = await model(b, await page(b));
   const opts = { blocked: reject };
   if (ref) {

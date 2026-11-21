@@ -371,6 +371,7 @@ test("an action refuses arguments it does not take, naming them; a malformed or 
   assert.match(r.text, /observe takes query, ref, page, not url: open the url first, then observe/);
   assert.match((await browse(c, b, { action: "click", ref: "e1", value: "x" })).text, /click takes ref, not value/);
   assert.match((await browse(c, b, { action: "tabs", page: 2 })).text, /tabs takes nothing, not page/);
+  assert.match((await browse(c, b, { action: "observe", page: 2 })).text, /observe takes page only with a query or a ref/);
   assert.match((await browse(c, b, { action: "click" })).text, /click needs ref/);
   const bad = await browse(c, b, { action: "click", ref: "12" });
   assert.equal(bad.error, true);
