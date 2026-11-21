@@ -69,9 +69,25 @@ Tools:
   its browser is open a second `start` on it fails at once, naming the holder. At most 4 run at once; at the cap it
   fails at once.
   Chrome launches on the first `browse`.
-- `browse {browser, action, ...}`: `open {url}` opens a web page; `text {page?}` reads its visible text in pages
-  of 6000 characters. Documents (PDF, spreadsheets) are refused. A call over its 120 s limit fails and restarts
-  that browser, which keeps its cookies.
+- `browse {browser, action, ...}`, on the browser's current tab. A call over its 120 s limit fails and restarts
+  that browser, which keeps its cookies. Documents (PDF, spreadsheets) are not read yet. The actions:
+  - `open {url}`: open a web page;
+  - `observe`: the page's accessibility outline, each element a line with a ref (`[ref=e12]`), at most 6000
+    characters; `observe {query, page?}`: the lines holding every word of the query, each with its path;
+    `observe {ref, page?}`: one element whole (a table, a list, a form, a select's options);
+  - `text {page?}`: the visible text, in pages of 6000 characters;
+  - `click {ref}`: a link, button or tab; a checkbox, radio or switch is toggled;
+  - `select {ref, value}`: an option by its label;
+  - `type {ref, value, submit?}`: fill a field (a date part is typed key by key); `submit` presses Enter;
+  - `back`, `scroll`;
+  - `tabs`, `switch_tab {tab}`: this browser's tabs only;
+  - `screenshot`: an image of the current view, in the reply, never written to disk.
+
+  An action takes only its own arguments; any other is refused by name. A ref that is malformed or no longer on
+  the page fails with "observe again". A click, select or type that stays on the page replies with the lines
+  that changed; one that navigates, even a moment later, replies with the new page. A new tab it opens becomes
+  the current tab and is reported; one to a refused address, or showing a document, is closed. A click that
+  another element covers (a cookie banner) fails, saying to dismiss it; nothing is clicked through it.
 - `close {browser}`: ends the browser. A throwaway profile copy is deleted; a named profile stays.
 - `search {query}`: up to 10 web results (title, url, snippet, date) through MiniMax; 30 s limit; no browser.
 - `news_search {query, from, to, edition?}`: Google News headlines in the day range, newest first, at most 50,

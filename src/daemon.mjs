@@ -2,8 +2,9 @@
 // The browser daemon: one service on 127.0.0.1 speaking MCP over Streamable HTTP, with a headed Chrome of its
 // own per caller, addressed by a handle. The source policy (policy.mjs, moved) and the proxy that enforces it
 // per browser (proxy.mjs, new) keep every browser off local and private hosts. The launch, time limits, audit
-// log and open/text are moved from the page readers' browser server (browsers.mjs, browse.mjs); the web and news
-// searches are moved too (search.mjs, google-news.mjs) and need no browser. The profile root variable is moved
+// log and the browse actions are moved from the page readers' browser server (browsers.mjs, browse.mjs), with its
+// page outline (snapshot.mjs); the web and news searches are moved too (search.mjs, google-news.mjs) and need no
+// browser. The profile root variable is moved
 // from the same server; profiles.mjs is new. This file is the wiring: environment, HTTP, tools, signals.
 
 import { createRequire } from "node:module";
@@ -14,7 +15,8 @@ import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { CallTimeout, close, closeAll, configure, ensureBrowser, exitSync, get, limited, log, resetBrowser, run, searchLog, start } from "./browsers.mjs";
-import { open, text } from "./browse.mjs";
+import { back, click, observe, open, screenshot, scroll, select, switchTab, tabs, text, typeInto } from "./browse.mjs";
+import { VIEW_CHARS } from "./snapshot.mjs";
 import { testLookup } from "./policy.mjs";
 import { checkProfileRoot } from "./profiles.mjs";
 import { search } from "./search.mjs";
@@ -75,8 +77,12 @@ const searchFetch = (signal) => (url, init = {}) => {
   return fetch(origin ? env.BROWSER_TEST_SEARCH_ORIGIN + url.slice(origin.length) : url, { ...init, signal });
 };
 
-// The arguments each browse action takes; any other is refused, so a misplaced one is not silently ignored.
-const TAKES = { open: ["url"], text: ["page"] };
+// The arguments each browse action takes; any other is refused, so a misplaced one is not silently ignored
+// (agents passed a url to observe and read the empty tab's error as a blocked page).
+const TAKES = {
+  open: ["url"], observe: ["query", "ref", "page"], text: ["page"], click: ["ref"], select: ["ref", "value"],
+  type: ["ref", "value", "submit"], back: [], scroll: [], tabs: [], switch_tab: ["tab"], screenshot: [],
+};
 
 /** A call on one browser: its own queue and time limit, one audit line, errors the agent can act on. */
 async function tool(name, args, fn) {
@@ -96,7 +102,7 @@ async function tool(name, args, fn) {
         return fn(b);
       }, () => { callState.cancelled = true; });
       log(b, { type: "call", tool: name, args, ok: true, ms: Date.now() - started });
-      return reply(result);
+      return result?.content ? result : reply(result); // a screenshot is MCP content already
     } catch (error) {
       let message = String(error.message || error);
       if (error instanceof CallTimeout) {
@@ -163,31 +169,83 @@ idle minutes, or when the service stops. At most 4 run at once: at the cap, star
   );
   s.tool(
     "browse",
-    `Browse the web in a real browser: the one \`start\` gave you.
+    `Browse the web in a real browser: the one \`start\` gave you. Any public site opens; local, private and
+non-http addresses never do: open fails with \`<url> is blocked (<reason>)\`.
 Each call has a 120 s limit: a call that runs over it fails and the browser restarts (your cookies stay).
 Documents (PDF, spreadsheets) are not read here.
-Local, private and non-http addresses are refused: open fails with \`<url> is blocked (<reason>)\`.
-Actions:
+The page is seen as its accessibility tree: each element is a line "role "name" [state] [ref=e12]";
+links end with "-> URL". Refs address elements of the current tab until the page changes.
+Actions (each takes only its own arguments; any other is refused by name):
 - open {url}: open a web page.
-- text {page?}: the page's visible text, in pages of 6000 characters.`,
+- observe: the page's outline (landmarks, headings, forms and their controls, tables and lists, long
+  ones cut to their first items), at most ${VIEW_CHARS} characters, saying what was left out.
+- observe {query, page?}: the lines whose text, name or URL contain every word of query (any order,
+  case and accents ignored), each with its path (main > table > row); options of a select are matched too.
+- observe {ref, page?}: everything under one element (a table, a list, a form, a select's options).
+- text {page?}: the page's visible text, in pages of 6000 characters.
+- click {ref}: click a link, button or tab; a checkbox, radio or switch is toggled (new tabs are reported).
+- select {ref, value}: choose an option of a select by its label.
+- type {ref, value, submit?}: type into a field; submit presses Enter. A date shown as parts (day,
+  month, year spinbuttons) takes one part per call; its refs change as it re-renders: observe again
+  between parts.
+- back, scroll: go back; scroll down to load more.
+- tabs, switch_tab {tab}: list or switch your browser's tabs.
+- screenshot: an image of the current view, in the reply; it is not kept.
+How to use it:
+- Start each page with observe: its outline shows forms with their fields and states, tables with their
+  row counts, collapsed lists and dialogs, each element with a ref. Then observe with a query (words from
+  the page) or with a ref (a whole list, table or form). Refs belong to the page as it is now: when one
+  "is not on the page now", observe again.
+- A query matches words, not meaning: every word must occur. Use the page's own words and language, and
+  word stems ("report", not "reports"). When nothing matches, read the outline instead of rephrasing.
+- When a click says another element covers it, dismiss the cookie or consent banner first (query
+  "accept"); some sites show it again on each page.
+- Content behind an accordion, a tab or a year button (an archive, older reports) is not on the page until
+  you click it open.
+- Search forms: set every filter, run the search, then check the results in the reply against your
+  filters: the count, and the rows' dates against your date range. When they do not match, run the search
+  again. A ticked default filter (such as "current only") can hide older entries and disable other fields:
+  untick it.
+- A date shown in parts: set every part, the year first, then the month, then the day.
+- A click or form change that stays on the page replies with the lines that changed; one that opens a page
+  replies with its text. A new tab a click opens becomes the current tab; one to a blocked address, or one
+  that shows a document, is closed, and the reply says so.`,
     {
       browser: z.string().min(1),
-      action: z.enum(["open", "text"]),
+      action: z.enum(Object.keys(TAKES)),
       url: z.string().optional(),
+      ref: z.string().optional(),
+      value: z.string().optional(),
+      submit: z.boolean().optional(),
+      query: z.string().optional(),
       page: z.number().int().min(1).optional(),
+      tab: z.string().optional(),
     },
     async (args) => tool("browse", args, async (b) => {
       const takes = TAKES[args.action];
       const extra = Object.keys(args).filter((k) => !["browser", "action"].includes(k) && args[k] !== undefined && !takes.includes(k));
       if (extra.length) {
-        throw new Error(`${args.action} takes ${takes.join(", ")}, not ${extra.join(", ")}` +
+        throw new Error(`${args.action} takes ${takes.length ? takes.join(", ") : "nothing"}, not ${extra.join(", ")}` +
           (extra.includes("url") ? `: open the url first, then ${args.action}` : ""));
       }
-      if (args.action === "open") {
-        if (!args.url) throw new Error("open needs url");
-        return open(b, args.url);
+      const need = (key) => {
+        if (args[key] === undefined || args[key] === "") throw new Error(`${args.action} needs ${key}`);
+        return args[key];
+      };
+      switch (args.action) {
+        case "open": return open(b, need("url"));
+        case "observe": return observe(b, args);
+        case "text": return text(b, args.page);
+        case "click": return click(b, need("ref"));
+        case "select": return select(b, need("ref"), need("value"));
+        case "type": return typeInto(b, need("ref"), need("value"), args.submit);
+        case "back": return back(b);
+        case "scroll": return scroll(b);
+        case "tabs": return tabs(b);
+        case "switch_tab": return switchTab(b, need("tab"));
+        case "screenshot": return screenshot(b);
       }
-      return text(b, args.page);
+      throw new Error(`unknown action ${args.action}`);
     }),
   );
   s.tool(

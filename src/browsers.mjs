@@ -9,7 +9,7 @@ import { randomBytes } from "node:crypto";
 import { appendFileSync, cpSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "patchright";
-import { refuse, systemLookup } from "./policy.mjs";
+import { isDocumentType, refuse, systemLookup } from "./policy.mjs";
 import { profilePath } from "./profiles.mjs";
 import { startProxy } from "./proxy.mjs";
 
@@ -72,8 +72,11 @@ function guard(b) {
     try {
       if (req.isNavigationRequest()) via = req.frame().parentFrame() === null ? "navigation" : "frame";
     } catch {
-      // A request without a frame (a worker) is logged by its resource type.
+      // A request without a frame (a worker, or a popup's first navigation) is logged by its resource type.
+      if (req.isNavigationRequest()) via = "navigation";
     }
+    // What a tab left on Chrome's error page was refused; lastRefusal also holds Chrome's own connections.
+    if (via === "navigation") b.refusedNavigation = { url: req.url(), reason: refusal.reason };
     rejected(b, via, req.url(), refusal.reason, refusal.address);
     return route.abort("blockedbyclient").catch(closed);
   };
@@ -115,7 +118,7 @@ export function start({ profile: name } = {}) {
   const profile = named ?? join(config.profiles, handle);
   if (!named) cpSync(config.baseProfile, profile, { recursive: true, filter: (src) => !/^Singleton/.test(src.split("/").pop()) });
   const b = { handle, profile, named: named ? name : null, log: join(config.logs, `${handle}.jsonl`), xvfb: null, proxy: null, lastRefusal: null, context: null, starting: null,
-    retiring: Promise.resolve(), tabs: new Map(), current: null, front: null, tabCount: 0, lastGood: new WeakMap(),
+    retiring: Promise.resolve(), tabs: new Map(), current: null, front: null, tabCount: 0, lastGood: new WeakMap(), opened: [], documents: new WeakMap(), refusedNavigation: null,
     queue: Promise.resolve(), lastUsed: Date.now(), busy: 0, closed: false };
   table.set(handle, b);
   log(b, { type: "registered", ...(b.named ? { profile: b.named } : {}) });
@@ -151,6 +154,13 @@ function addTab(b, page) {
   const id = `t${++b.tabCount}`;
   b.tabs.set(id, page);
   page.on("close", () => b.tabs.delete(id));
+  // The document a tab's main frame shows (Chrome's PDF viewer): the after-action step closes such a new tab.
+  page.on("response", (r) => {
+    if (r.frame() === page.mainFrame() && r.request().isNavigationRequest()) {
+      if (isDocumentType(r.headers()["content-type"])) b.documents.set(page, r.url());
+      else b.documents.delete(page);
+    }
+  });
   return id;
 }
 
@@ -183,8 +193,10 @@ export async function ensureBrowser(b) {
       env: { ...process.env, DISPLAY: b.xvfb.display },
       viewport: { width: 1280, height: 1000 },
       serviceWorkers: "block",
+      // Upstream Playwright disables the back-forward cache and patchright does not: a page restored from it
+      // never fires its load events again, so back would wait out its time limit.
       args: ["--no-first-run", "--disable-session-crashed-bubble", "--password-store=basic",
-        "--disable-background-networking", "--disable-component-update",
+        "--disable-background-networking", "--disable-component-update", "--disable-back-forward-cache",
         "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"],
       proxy: { server: `http://127.0.0.1:${b.proxy.port}` },
     });
@@ -194,7 +206,12 @@ export async function ensureBrowser(b) {
     }
     b.context = context;
     await context.route("**/*", guard(b));
-    context.on("page", (page) => addTab(b, page));
+    // A new tab stays pending until the action that opened it has checked where it went.
+    context.on("page", (page) => {
+      const id = addTab(b, page);
+      b.opened.push(id);
+      log(b, { type: "tab_opened", tab: id });
+    });
     for (const page of context.pages()) b.current = addTab(b, page);
     if (!b.current) b.current = addTab(b, await context.newPage());
     log(b, { type: "browser_started", display: b.xvfb.display, xvfb_pid: b.xvfb.proc.pid, proxy_port: b.proxy.port, profile: b.profile });
@@ -212,6 +229,7 @@ export function resetBrowser(b, reason) {
   const old = b.context;
   b.context = null;
   b.tabs.clear();
+  b.opened.length = 0;
   b.current = null;
   b.front = null;
   log(b, { type: "browser_reset", reason });
