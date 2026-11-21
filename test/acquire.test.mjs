@@ -391,7 +391,8 @@ test("nothing is written outside each save_dir's sources, and the daemon keeps n
     assert.ok(top.length === 0 || (top.length === 1 && top[0] === "sources"), `${dir}: ${top}`);
   }
   for (const one of daemons) {
-    assert.deepEqual(readdirSync(one.stateDir).sort(), ["logs", "profiles"]);
+    assert.deepEqual(readdirSync(one.stateDir).sort(), ["downloads", "logs", "profiles"]);
+    assert.deepEqual(readdirSync(join(one.stateDir, "downloads")), [], "no download outlives its browser");
     assert.ok(readdirSync(join(one.stateDir, "logs")).every((n) => n.endsWith(".jsonl")));
   }
 });

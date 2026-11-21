@@ -6,7 +6,8 @@
 // page outline (snapshot.mjs); the web and news searches are moved too (search.mjs, google-news.mjs) and need no
 // browser. The profile root variable is moved
 // from the same server; profiles.mjs is new. Saving pages and documents into a caller's save_dir is moved too
-// (acquire.mjs, pages.mjs). This file is the wiring: environment, HTTP, tools, signals.
+// (acquire.mjs, pages.mjs), and so is the code console, which runs caller code in a child process per browser
+// (console.mjs, console-child.mjs). This file is the wiring: environment, HTTP, tools, signals.
 
 import { createRequire } from "node:module";
 import { accessSync, constants, realpathSync, statSync } from "node:fs";
@@ -19,6 +20,7 @@ import { CallTimeout, close, closeAll, configure, ensureBrowser, exitSync, get, 
 import { back, click, observe, open, screenshot, scroll, select, switchTab, tabs, text, typeInto } from "./browse.mjs";
 import { VIEW_CHARS } from "./snapshot.mjs";
 import { acquire } from "./acquire.mjs";
+import { CODE_CHARS, DESCRIPTION, evaluate, killBrowser } from "./console.mjs";
 import { testLookup } from "./policy.mjs";
 import { checkProfileRoot } from "./profiles.mjs";
 import { search } from "./search.mjs";
@@ -111,9 +113,10 @@ function withLate(value, late) {
 
 /**
  * A call on one browser: its own queue and time limit, one audit line, errors the agent can act on. A browse call
- * over its limit restarts the browser; an acquire call does not (`reset`).
+ * over its limit restarts the browser; an acquire call does not (`reset`); a console call kills it first (`kill`).
+ * An error that carries `browser` (what a failed script's actions caused) keeps it in the reply.
  */
-async function tool(name, args, fn, { limit, reset = true } = {}) {
+async function tool(name, args, fn, { limit, reset = true, kill } = {}) {
   let b;
   try {
     b = get(args.browser); // an unknown handle fails here, before any browser is touched
@@ -127,21 +130,25 @@ async function tool(name, args, fn, { limit, reset = true } = {}) {
       const result = await limited(name, async () => {
         await ensureBrowser(b);
         if (callState.cancelled) throw new Error("call was cancelled during browser startup");
-        const value = await fn(b);
+        const value = await fn(b, callState);
         return withLate(value, await Promise.all(b.downloads.splice(0)));
       }, () => { callState.cancelled = true; }, limit);
       log(b, { type: "call", tool: name, args, ok: true, ms: Date.now() - started });
       return result?.content ? result : reply(result); // a screenshot is MCP content already
     } catch (error) {
       let message = String(error.message || error);
-      if (error instanceof CallTimeout && reset) {
+      if (error instanceof CallTimeout && kill) {
+        await kill(b);
+        resetBrowser(b, message);
+        message += "; your code and its browser were killed, and the browser restarts on the next call (cookies stay, tabs are gone): open a page again";
+      } else if (error instanceof CallTimeout && reset) {
         resetBrowser(b, message);
         message += "; the browser was restarted: open a page again";
       } else if (error instanceof CallTimeout) {
         message += "; the browser was not restarted: try another copy of the document, or leave it unsaved";
       }
       log(b, { type: "call", tool: name, args, ok: false, error: message, ms: Date.now() - started });
-      return reply({ ok: false, error: message }, true);
+      return reply({ ok: false, error: message, ...(error.browser ? { browser: error.browser } : {}) }, true);
     }
   });
 }
@@ -298,6 +305,12 @@ document's own URL. Publication date: http_last_modified can be the day the file
 date printed on the document or listed next to it, or pdf_created.`,
     { browser: z.string().min(1), url: z.string().optional(), ref: z.string().optional(), current_page: z.boolean().optional() },
     async (args) => tool("acquire", args, (b) => acquire(b, args), { limit: ACQUIRE_LIMIT_MS, reset: false }),
+  );
+  s.tool(
+    "browser_eval",
+    DESCRIPTION(TEST_LIMIT ?? 120_000),
+    { browser: z.string().min(1), code: z.string().min(1).max(CODE_CHARS) },
+    async (args) => tool("browser_eval", args, (b, callState) => evaluate(b, args.code, callState), { kill: killBrowser }),
   );
   s.tool(
     "search",
