@@ -11,9 +11,10 @@
 import { appendFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
+import { strToU8, zipSync } from "fflate";
 
-/** A minimal PDF: one page per array of text lines. */
-export function pdf(pages) {
+/** A minimal PDF: one page per array of text lines; `info` is its document information (Title, CreationDate, …). */
+export function pdf(pages, info = null) {
   const objs = ["<< /Type /Catalog /Pages 2 0 R >>", null];
   const kids = [];
   for (const lines of pages) {
@@ -26,6 +27,7 @@ export function pdf(pages) {
   const font = objs.length + 1;
   objs.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
   objs[1] = `<< /Type /Pages /Kids [${kids.join(" ")}] /Count ${kids.length} >>`;
+  if (info) objs.push(`<< ${Object.entries(info).map(([k, v]) => `/${k} (${v})`).join(" ")} >>`);
   let out = "%PDF-1.4\n";
   const offsets = [];
   objs.forEach((body, i) => {
@@ -34,9 +36,48 @@ export function pdf(pages) {
   });
   const xref = out.length;
   out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${offsets.map((o) => `${String(o).padStart(10, "0")} 00000 n \n`).join("")}`;
-  out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R${info ? ` /Info ${objs.length} 0 R` : ""} >>\nstartxref\n${xref}\n%%EOF\n`;
   return Buffer.from(out, "latin1");
 }
+
+const XML = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
+const NS = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"';
+const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/**
+ * A minimal xlsx: `sheets` is [name, rows] in workbook order, each row an array of cells. A string cell is a shared
+ * string, a number a value, {inline} an inline string, {formula, value} a formula with its cached value, null a gap.
+ * The sheet files are numbered in reverse, so workbook order is not file order.
+ */
+export function xlsx(sheets) {
+  const shared = [];
+  const files = {};
+  const col = (i) => String.fromCharCode(65 + i);
+  sheets.forEach(([, rows], i) => {
+    const xml = rows.map((cells, r) => `<row r="${r + 1}">${cells.map((v, c) => {
+      const ref = `${col(c)}${r + 1}`;
+      if (v === null) return "";
+      if (typeof v === "number") return `<c r="${ref}"><v>${v}</v></c>`;
+      if (typeof v === "string") return `<c r="${ref}" t="s"><v>${shared.push(v) - 1}</v></c>`;
+      if (v.inline) return `<c r="${ref}" t="inlineStr"><is><t>${esc(v.inline)}</t></is></c>`;
+      return `<c r="${ref}"><f>${esc(v.formula)}</f><v>${v.value}</v></c>`;
+    }).join("")}</row>`).join("");
+    files[`xl/worksheets/sheet${sheets.length - i}.xml`] = strToU8(`${XML}<worksheet ${NS}><sheetData>${xml}</sheetData></worksheet>`);
+  });
+  files["xl/workbook.xml"] = strToU8(`${XML}<workbook ${NS}><sheets>${sheets.map(([name], i) =>
+    `<sheet name="${esc(name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join("")}</sheets></workbook>`);
+  files["xl/_rels/workbook.xml.rels"] = strToU8(`${XML}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_, i) =>
+    `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${sheets.length - i}.xml"/>`).join("")}</Relationships>`);
+  files["xl/sharedStrings.xml"] = strToU8(`${XML}<sst ${NS} count="${shared.length}">${shared.map((t) => `<si><t>${esc(t)}</t></si>`).join("")}</sst>`);
+  files["[Content_Types].xml"] = strToU8(`${XML}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>`);
+  return Buffer.from(zipSync(files));
+}
+
+export const FIGURES = xlsx([
+  ["Income statement", [["in CHF million", "2025", "2024"], ["Revenue", 1250, 1190], ["Operating profit", { formula: "B2-1039.5", value: 210.5 }, 180.2]]],
+  ["Share data", [["Shares outstanding", null, 74500000], [{ inline: "Treasury shares & own shares" }, null, 1500000]]],
+  ["Notes", [["Figures are unaudited"]]],
+]);
 
 const AR_2025 = pdf([
   ["Example Widgets AG", "Annual Report 2025"],
@@ -54,7 +95,7 @@ const AR_2025 = pdf([
     "Purchase of intangible assets (25.0) (20.0)", "Acquisition of subsidiaries (40.0) -"],
   ["Proposed appropriation", "The Board of Directors proposes a dividend for 2025 of CHF 1.80",
     "per registered share (2024: CHF 1.60).", "Share capital: see the results presentation for share data."],
-]);
+], { Title: "Annual Report 2025", CreationDate: "D:20260302090000Z", ModDate: "D:20260302100000Z" });
 
 const AR_2024 = pdf([["Example Widgets AG", "Annual Report 2024"], ["Consolidated income statement",
   "in CHF million 2024 2023", "Operating profit 180.2 170.0"]]);
@@ -190,9 +231,13 @@ const FILES = {
   // HTML page served as a PDF.
   "cdn.shared.test/space2/prefixed.pdf": [Buffer.concat([Buffer.from("\r\n\r\n"), pdf([["Prefixed report 42.0"]])]), null],
   "cdn.shared.test/space2/not-a.pdf": [Buffer.from("<!doctype html><html><body>viewer</body></html>"), null],
+  // A PDF header with no PDF behind it: poppler fails on it after the bytes are written.
+  "cdn.shared.test/space2/broken.pdf": [Buffer.from("%PDF-1.4\nnot really a pdf\n"), null],
   "ir.issuer.test/files/fy2025-presentation.pdf": [PRESENTATION, "Tue, 03 Mar 2026 06:30:00 GMT"],
   "ir.issuer.test/files/q.pdf": [pdf([["Quarter 7.40"]]), null, "attachment; filename=q.pdf"],
   "bucket.storage.test/capital.pdf": [pdf([["Capital structure", "Registered shares issued 76,000,000"]]), null],
+  "cdn.shared.test/space2/figures.xlsx": [FIGURES, "Wed, 04 Mar 2026 07:00:00 GMT", null,
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
 };
 
 /** Start the proxy on 127.0.0.1; returns {server, url, hits}. */
@@ -250,8 +295,8 @@ export async function startFixtureSite(port = 0) {
     if (key === "cdn.shared.test/space1/moved.pdf") return res.writeHead(302, { location: "http://10.9.9.9/stolen.pdf" }).end();
     if (key === "ir.issuer.test/files/via-storage") return res.writeHead(302, { location: "http://bucket.storage.test/capital.pdf?Signature=x" }).end();
     if (FILES[key]) {
-      const [body, modified, disposition] = FILES[key];
-      return res.writeHead(200, { "content-type": "application/pdf", ...(modified ? { "last-modified": modified } : {}),
+      const [body, modified, disposition, type] = FILES[key];
+      return res.writeHead(200, { "content-type": type ?? "application/pdf", ...(modified ? { "last-modified": modified } : {}),
         ...(disposition ? { "content-disposition": disposition } : {}) }).end(body);
     }
     if (PAGES[key]) return res.writeHead(200, { "content-type": "text/html" }).end(PAGES[key]);

@@ -5,11 +5,12 @@
 // log and the browse actions are moved from the page readers' browser server (browsers.mjs, browse.mjs), with its
 // page outline (snapshot.mjs); the web and news searches are moved too (search.mjs, google-news.mjs) and need no
 // browser. The profile root variable is moved
-// from the same server; profiles.mjs is new. This file is the wiring: environment, HTTP, tools, signals.
+// from the same server; profiles.mjs is new. Saving pages and documents into a caller's save_dir is moved too
+// (acquire.mjs, pages.mjs). This file is the wiring: environment, HTTP, tools, signals.
 
 import { createRequire } from "node:module";
-import { statSync } from "node:fs";
-import { join } from "node:path";
+import { accessSync, constants, realpathSync, statSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -17,6 +18,7 @@ import { z } from "zod";
 import { CallTimeout, close, closeAll, configure, ensureBrowser, exitSync, get, limited, log, resetBrowser, run, searchLog, start } from "./browsers.mjs";
 import { back, click, observe, open, screenshot, scroll, select, switchTab, tabs, text, typeInto } from "./browse.mjs";
 import { VIEW_CHARS } from "./snapshot.mjs";
+import { acquire } from "./acquire.mjs";
 import { testLookup } from "./policy.mjs";
 import { checkProfileRoot } from "./profiles.mjs";
 import { search } from "./search.mjs";
@@ -60,6 +62,18 @@ if (env.BROWSER_TEST_HOSTS) {
   }
 }
 
+/** A save_dir from start: absolute, an existing directory, writable; kept by its real path. */
+function checkSaveDir(dir) {
+  if (!isAbsolute(dir)) throw new Error(`save_dir must be an absolute path: ${dir}`);
+  if (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`save_dir is not an existing directory: ${dir}`);
+  try {
+    accessSync(dir, constants.W_OK);
+  } catch {
+    throw new Error(`save_dir is not writable: ${dir}`);
+  }
+  return realpathSync(dir);
+}
+
 const VERSION = createRequire(import.meta.url)("../package.json").version;
 
 function reply(value, isError = false) {
@@ -69,6 +83,8 @@ function reply(value, isError = false) {
 
 const TEST_LIMIT = Number(env.BROWSER_TEST_CALL_LIMIT_MS) || undefined;
 const SEARCH_LIMIT_MS = { search: TEST_LIMIT ?? 30_000, news_search: TEST_LIMIT ?? 60_000 };
+// A document's fetch and its pages can take minutes; a browse call's limit is the browsers' own.
+const ACQUIRE_LIMIT_MS = TEST_LIMIT ?? 360_000;
 
 // Offline tests only: both services' origins go to a local recorder. The moved modules keep their URLs.
 const ORIGINS = ["https://api.minimax.io", "https://news.google.com"];
@@ -84,8 +100,20 @@ const TAKES = {
   type: ["ref", "value", "submit"], back: [], scroll: [], tabs: [], switch_tab: ["tab"], screenshot: [],
 };
 
-/** A call on one browser: its own queue and time limit, one audit line, errors the agent can act on. */
-async function tool(name, args, fn) {
+/** A download that finished after an earlier reply, added to this one: its source_id always reaches the caller. */
+function withLate(value, late) {
+  if (!late.length) return value;
+  const note = { downloads_finished_since_last_call: late };
+  if (typeof value === "string") return `${JSON.stringify(note, null, 1)}\n${value}`;
+  if (value?.content) return { ...value, content: [...value.content, { type: "text", text: JSON.stringify(note, null, 1) }] };
+  return { ...value, ...note };
+}
+
+/**
+ * A call on one browser: its own queue and time limit, one audit line, errors the agent can act on. A browse call
+ * over its limit restarts the browser; an acquire call does not (`reset`).
+ */
+async function tool(name, args, fn, { limit, reset = true } = {}) {
   let b;
   try {
     b = get(args.browser); // an unknown handle fails here, before any browser is touched
@@ -99,15 +127,18 @@ async function tool(name, args, fn) {
       const result = await limited(name, async () => {
         await ensureBrowser(b);
         if (callState.cancelled) throw new Error("call was cancelled during browser startup");
-        return fn(b);
-      }, () => { callState.cancelled = true; });
+        const value = await fn(b);
+        return withLate(value, await Promise.all(b.downloads.splice(0)));
+      }, () => { callState.cancelled = true; }, limit);
       log(b, { type: "call", tool: name, args, ok: true, ms: Date.now() - started });
       return result?.content ? result : reply(result); // a screenshot is MCP content already
     } catch (error) {
       let message = String(error.message || error);
-      if (error instanceof CallTimeout) {
+      if (error instanceof CallTimeout && reset) {
         resetBrowser(b, message);
         message += "; the browser was restarted: open a page again";
+      } else if (error instanceof CallTimeout) {
+        message += "; the browser was not restarted: try another copy of the document, or leave it unsaved";
       }
       log(b, { type: "call", tool: name, args, ok: false, error: message, ms: Date.now() - started });
       return reply({ ok: false, error: message }, true);
@@ -144,11 +175,13 @@ function server() {
 Without \`profile\` it runs on a throwaway copy of the base profile. With \`profile\` (the name of a profile the operator
 made, e.g. a signed-in one) it runs on that profile itself, with its cookies and logins. While your browser is open no
 other browser can open that profile: start fails at once, naming the browser that holds it. Your browser ends on close, after 10
-idle minutes, or when the service stops. At most 4 run at once: at the cap, start fails at once, so close one or try later.`,
-    { profile: z.string().min(1).optional() },
-    async ({ profile }) => {
+idle minutes, or when the service stops. At most 4 run at once: at the cap, start fails at once, so close one or try later.
+With \`save_dir\` (an absolute path to an existing directory) acquire saves pages and documents under
+<save_dir>/sources/; without it nothing can be saved: acquire fails, and a download is reported as not saved.`,
+    { profile: z.string().min(1).optional(), save_dir: z.string().min(1).optional() },
+    async ({ profile, save_dir }) => {
       try {
-        return reply({ browser: start({ profile }) });
+        return reply({ browser: start({ profile, saveDir: save_dir === undefined ? null : checkSaveDir(save_dir) }) });
       } catch (error) {
         return reply({ ok: false, error: error.message }, true);
       }
@@ -172,7 +205,7 @@ idle minutes, or when the service stops. At most 4 run at once: at the cap, star
     `Browse the web in a real browser: the one \`start\` gave you. Any public site opens; local, private and
 non-http addresses never do: open fails with \`<url> is blocked (<reason>)\`.
 Each call has a 120 s limit: a call that runs over it fails and the browser restarts (your cookies stay).
-Documents (PDF, spreadsheets) are not read here.
+Documents (PDF, spreadsheets) are not read here: save them with acquire.
 The page is seen as its accessibility tree: each element is a line "role "name" [state] [ref=e12]";
 links end with "-> URL". Refs address elements of the current tab until the page changes.
 Actions (each takes only its own arguments; any other is refused by name):
@@ -183,7 +216,8 @@ Actions (each takes only its own arguments; any other is refused by name):
   case and accents ignored), each with its path (main > table > row); options of a select are matched too.
 - observe {ref, page?}: everything under one element (a table, a list, a form, a select's options).
 - text {page?}: the page's visible text, in pages of 6000 characters.
-- click {ref}: click a link, button or tab; a checkbox, radio or switch is toggled (new tabs are reported).
+- click {ref}: click a link, button or tab; a checkbox, radio or switch is toggled (new tabs and downloads are
+  reported).
 - select {ref, value}: choose an option of a select by its label.
 - type {ref, value, submit?}: type into a field; submit presses Enter. A date shown as parts (day,
   month, year spinbuttons) takes one part per call; its refs change as it re-renders: observe again
@@ -208,8 +242,9 @@ How to use it:
   untick it.
 - A date shown in parts: set every part, the year first, then the month, then the day.
 - A click or form change that stays on the page replies with the lines that changed; one that opens a page
-  replies with its text. A new tab a click opens becomes the current tab; one to a blocked address, or one
-  that shows a document, is closed, and the reply says so.`,
+  replies with its text. A new tab a click opens becomes the current tab; one to a blocked address is closed,
+  and the reply says so. A link that opens a document in a new tab or downloads it is acquired for you: that
+  reply, or the next one, gives the source_id. Acquire a PDF's URL; do not open it.`,
     {
       browser: z.string().min(1),
       action: z.enum(Object.keys(TAKES)),
@@ -247,6 +282,22 @@ How to use it:
       }
       throw new Error(`unknown action ${args.action}`);
     }),
+  );
+  s.tool(
+    "acquire",
+    `Save a source so it can be read and cited: only acquired sources can be cited. Needs a browser started with
+save_dir. Give one of: url (a document's or web page's URL, e.g. from search or a page), ref (an observed link's
+ref), or current_page: true (save the web page now open). A document (PDF, spreadsheet) is saved as fetched; a web
+page (an HTML report or release) is opened in the browser and saved with its text and image.
+Returns the source_id and its files under <save_dir>/sources/<source_id>/ (PDF pages as pages/NNNN.txt and NNNN.png;
+an xlsx's sheets as pages/NNNN.txt, the sheet's number cited as page; a page as original.html, text.txt and page.png),
+its provenance and the publication evidence code found. The same bytes saved again keep their source_id. Cite
+sources by this source_id. Each call has a ${ACQUIRE_LIMIT_MS / 60_000}-minute limit; one that runs over it fails and the
+browser is not restarted. A link into a site's inline document viewer stands for the document it shows: acquire the
+document's own URL. Publication date: http_last_modified can be the day the file was fetched (newswires); prefer the
+date printed on the document or listed next to it, or pdf_created.`,
+    { browser: z.string().min(1), url: z.string().optional(), ref: z.string().optional(), current_page: z.boolean().optional() },
+    async (args) => tool("acquire", args, (b) => acquire(b, args), { limit: ACQUIRE_LIMIT_MS, reset: false }),
   );
   s.tool(
     "search",
@@ -301,7 +352,8 @@ app.delete("/mcp", notAllowed);
 const http = app.listen(PORT, "127.0.0.1", (error) => {
   if (error) fail(`cannot listen on 127.0.0.1:${PORT}: ${error.message}`);
   // Offline tests only: the fixture proxy that plays the internet is the policy proxy's upstream, the host map
-  // replaces DNS, every call limit is shortened to see one run over, and so is the idle limit.
+  // replaces DNS, every call limit is shortened to see one run over, and so is the idle limit; a document's
+  // preparation can be slowed to see one run long.
   configure({
     baseProfile: env.BROWSER_BASE_PROFILE,
     profileRoot: env.BROWSER_PROFILE_ROOT,
@@ -309,6 +361,8 @@ const http = app.listen(PORT, "127.0.0.1", (error) => {
     proxy: env.BROWSER_TEST_PROXY,
     lookup,
     callLimitMs: TEST_LIMIT,
+    screenshotMs: TEST_LIMIT ? 2_000 : undefined,
+    prepareDelayMs: Number(env.BROWSER_TEST_PREPARE_MS) || undefined,
     idleMs: Number(env.BROWSER_TEST_IDLE_MS) || undefined,
   });
   process.stderr.write(`browser-mcp listening on http://127.0.0.1:${PORT}/mcp\n`);
