@@ -23,7 +23,7 @@ The daemon reads its environment and refuses to start without the five variables
 |---|---|
 | `BROWSER_PORT` | TCP port on 127.0.0.1 |
 | `BROWSER_BASE_PROFILE` | an existing directory: the template profile every browser starts from (a copy) |
-| `BROWSER_STATE_DIR` | the daemon's directory: `profiles/<handle>/` (copies) and `logs/<handle>.jsonl` (audit log) |
+| `BROWSER_STATE_DIR` | the daemon's directory: `profiles/<handle>/` (copies), `downloads/<handle>/` (a download until it is saved) and `logs/<handle>.jsonl` (audit log) |
 | `BROWSER_PROFILE_ROOT` | an existing directory of named profiles, one subdirectory each; it must not be, contain or sit inside the base profile or the state directory's `profiles/` |
 | `BROWSER_MINIMAX_KEY` | the MiniMax API key for `search`; it is in no reply and no log |
 
@@ -105,6 +105,23 @@ Tools:
   time and hash. Several browsers can share a `save_dir`: each save is prepared in a staging directory of its own
   under `sources/.staging/`, then moved into place and registered one at a time. 6-minute limit; a call over it
   fails without restarting the browser.
+- `browser_eval {browser, code}`: the code console. `code` (at most 32,000 characters) is the body of an async
+  function with `page` (the browser's current tab), `context` and `snapshot(page?)` (the outline `observe` shows,
+  refused for a page off the source policy) in scope. It runs in a child process of the daemon per browser, which
+  is connected over CDP to that browser alone through its debugging port (on 127.0.0.1, never in a reply), one call
+  at a time. The reply is `{truncated: false, value, browser}`, the value up to 12,000 characters of JSON; over that it
+  is `{truncated: true, value_chars, value_preview}`, and the audit log has it whole. `undefined` comes back as
+  `null`; a value that is not JSON-serializable fails. `browser` gives the current tab and URL, the tabs the script
+  opened or closed, and `downloads`: the documents and downloads it caused, saved by code as with `browse`. A script
+  that throws fails with its message, and its reply still carries `browser`. A call over its limit (120 s) kills the
+  child and that browser before the reply; the browser restarts on the next call, keeping its handle, profile and
+  `save_dir`. A child that dies fails the call, and the next call starts a new one. The code, its result and its
+  errors go to the browser's audit log.
+
+  The console is fenced by its description, not sandboxed: the child runs as the daemon's user, without the
+  daemon's `BROWSER_*` settings. Caller code is told to stay in the browser: no filesystem, imports, process,
+  shell, environment, `context.request` or network client of its own. Every request the browser makes still
+  passes the source policy. It guards against accidental cross-talk between callers, not against a hostile one.
 - `close {browser}`: ends the browser. A throwaway profile copy is deleted; a named profile stays.
 - `search {query}`: up to 10 web results (title, url, snippet, date) through MiniMax; 30 s limit; no browser.
 - `news_search {query, from, to, edition?}`: Google News headlines in the day range, newest first, at most 50,
