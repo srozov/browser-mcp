@@ -5,7 +5,9 @@
 //
 // A run succeeds when its session ended with a result, every check of its task is in its report (case, spacing,
 // curly quotes and dash kinds aside), and, for a "save a document" task, a PDF whose first page holds the task's
-// marker is in its save directory.
+// marker is in its save directory. A "listings" task (T11) succeeds when its report gives at least `min` distinct
+// listings that a bike search of the reference set returned (listings-reference.mjs; every reference-*.json in the
+// out dir, unioned), each with the title and one of the prices that listing's result card shows.
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync, openSync, readSync, closeSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -63,6 +65,55 @@ function helperCost(model, h) {
   return (h.input_tokens * p.input + h.cache_creation_input_tokens * p.input + h.cache_read_input_tokens * p.cache_read + h.output_tokens * p.output) / 1e6;
 }
 
+// The reference set for listings tasks: every listing the marketplace's searches returned, over all captures.
+const reference = {};
+for (const file of existsSync(out) ? readdirSync(out).filter((f) => /^reference-.*\.json$/.test(f)) : []) {
+  const capture = JSON.parse(readFileSync(join(out, file), "utf8"));
+  for (const [id, l] of Object.entries(capture.listings)) {
+    const ref = (reference[id] ??= { titles: new Set(), prices: new Set(), current: [], bike: false });
+    for (const t of [l.alt, ...l.lines]) if (t) ref.titles.add(norm(t));
+    for (const p of l.prices) ref.prices.add(price(p));
+    if (l.prices.length) ref.current.push(Number(price(l.prices[0]))); // the card's first price: the bid or the fixed price
+    ref.bike ||= l.searches.some((s) => capture.bike_searches.includes(s));
+  }
+}
+
+function price(text) {
+  const n = Number(String(text).replace(/[^0-9.]/g, "").replace(/\.$/, ""));
+  return Number.isFinite(n) ? n.toFixed(2) : null;
+}
+
+// A price field matches when one of its amounts is one the listing's card showed, or lies within the bids the
+// captures saw (an auction's bid rises during a batch). A field may hold more than the price ("1'699.00 (0 Gebote)").
+function priceMatches(ref, field) {
+  const amounts = String(field).match(/\d{1,3}(?:'\d{3})+(?:\.\d{2})?|\d+\.\d{2}|\d+/g) ?? [];
+  return amounts.map(price).some((p) => ref.prices.has(p)
+    || (ref.current.length && Number(p) >= Math.min(...ref.current) && Number(p) <= Math.max(...ref.current)));
+}
+
+// One report line per listing, "title | price | URL"; a line's listing is the first marketplace URL on it.
+function gradeListings(report) {
+  const seen = new Map();
+  for (const line of String(report ?? "").split("\n")) {
+    const id = line.match(/ricardo\.ch\/[a-z]{2}\/a\/[^\s|]*-(\d{8,})/)?.[1];
+    if (!id || seen.has(id)) continue;
+    // The URL is the last field and the price the one before it; a title may hold a "|" of its own.
+    const parts = line.replace(/\*\*/g, "").split("|").map((part) => part.trim());
+    const cost = parts.length >= 3 ? parts.at(-2) : "";
+    const title = parts.length >= 3 ? parts.slice(0, -2).join(" | ") : parts[0];
+    seen.set(id, { title: title.replace(/^(?:[-*\u2022]|\d+[.)])\s+/, ""), cost });
+  }
+  const g = { reported: seen.size, in_area: 0, not_bike: 0, unknown: 0, exact: 0 };
+  for (const [id, { title, cost }] of seen) {
+    const ref = reference[id];
+    if (!ref) { g.unknown += 1; continue; }
+    if (!ref.bike) { g.not_bike += 1; continue; }
+    g.in_area += 1;
+    if (ref.titles.has(norm(title)) && priceMatches(ref, cost)) g.exact += 1;
+  }
+  return g;
+}
+
 const runs = [];
 for (const agent of ["typed", "act-extract"]) {
   for (const name of existsSync(join(out, agent)) ? readdirSync(join(out, agent)).sort() : []) {
@@ -71,7 +122,8 @@ for (const agent of ["typed", "act-extract"]) {
     const r = JSON.parse(readFileSync(join(dir, "result.json"), "utf8"));
     const task = tasks[r.task];
     const report = norm(r.report);
-    const missing = task.checks.filter((c) => !report.includes(norm(c)));
+    const listings = task.listings ? gradeListings(r.report) : null;
+    const missing = listings ? [] : task.checks.filter((c) => !report.includes(norm(c)));
     const saved = task.saved_pdf_marker ? savedPdf(join(dir, "save"), task.saved_pdf_marker) : null;
     const ended = r.result?.subtype === "success" && !r.timed_out;
     const usage = Object.values(r.result?.modelUsage ?? {});
@@ -79,7 +131,8 @@ for (const agent of ["typed", "act-extract"]) {
     const caller = r.result?.total_cost_usd ?? 0;
     const helper = helperCost(r.helper_model, r.helper);
     runs.push({
-      agent, task: r.task, run: r.run, success: ended && missing.length === 0 && saved !== false,
+      agent, task: r.task, run: r.run,
+      success: ended && missing.length === 0 && saved !== false && (!listings || listings.exact >= task.listings.min), listings,
       ended, missing, saved, turns: r.result?.num_turns ?? null, wall_s: r.wall_ms / 1000,
       caller_tokens: callerTokens, caller_usd: caller,
       helper_tokens: r.helper ? r.helper.input_tokens + r.helper.output_tokens + r.helper.cache_read_input_tokens + r.helper.cache_creation_input_tokens : 0,
@@ -150,7 +203,8 @@ for (const id of Object.keys(tasks)) {
 }
 lines.push("", "### Every run", "", row(["Agent", "Task", "Run", "Result", "Page code", "Turns", "Caller", "Helper (requests)", "Total", "Wall"]), row(Array(10).fill("---")));
 for (const r of runs) {
-  const why = r.success ? "ok" : !r.ended ? "no result" : [r.missing.length ? `missing ${r.missing.length} of ${tasks[r.task].checks.length}` : "", r.saved === false ? "not saved" : ""].filter(Boolean).join(", ");
+  const why = r.listings && r.ended ? `${r.listings.exact} exact, ${r.listings.in_area} in area, ${r.listings.reported} given${r.listings.not_bike ? `, ${r.listings.not_bike} not bikes` : ""}${r.listings.unknown ? `, ${r.listings.unknown} unknown` : ""}`
+    : r.success ? "ok" : !r.ended ? "no result" : [r.missing.length ? `missing ${r.missing.length} of ${tasks[r.task].checks.length}` : "", r.saved === false ? "not saved" : ""].filter(Boolean).join(", ");
   lines.push(row([r.agent, r.task, r.run, why, r.page_code === null ? "–" : r.page_code ? "yes" : "no", r.turns, usd(r.caller_usd), r.agent === "typed" ? "–" : `${usd(r.helper_usd)} (${r.helper_requests})`, usd(r.total_usd), `${r.wall_s.toFixed(0)} s`]));
 }
 lines.push("", `Decision rule: act/extract succeeds at least as often: ${summary.rule.act_extract_succeeds_at_least_as_often}; costs less in total: ${summary.rule.act_extract_costs_less}; add act/extract: ${summary.rule.add_act_extract}.`);
