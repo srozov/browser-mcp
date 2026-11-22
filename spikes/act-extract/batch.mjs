@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Runs the spike: every task, `runs` times, with each agent, `concurrency` runs at a time, the two agents interleaved.
-//   node batch.mjs <out dir> [runs=2] [concurrency=4]
+// Runs the spike: every task (or the tasks named), `runs` times, with each agent, `concurrency` runs at a time, the
+// two agents interleaved.
+//   node batch.mjs <out dir> [runs=2] [concurrency=4] [task id ...]
 // A run whose result.json exists is skipped, so a stopped batch resumes. run.mjs refuses a run directory that exists
 // without one (a run that crashed): it is reported, and left for a person to look at.
 import { spawn } from "node:child_process";
@@ -9,13 +10,14 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const [outArg, runsArg = "2", concurrencyArg = "4"] = process.argv.slice(2);
+const [outArg, runsArg = "2", concurrencyArg = "4", ...only] = process.argv.slice(2);
 if (!outArg) {
-  console.error("usage: node batch.mjs <out dir> [runs=2] [concurrency=4]");
+  console.error("usage: node batch.mjs <out dir> [runs=2] [concurrency=4] [task id ...]");
   process.exit(2);
 }
 const out = resolve(outArg);
-const tasks = JSON.parse(readFileSync(join(here, "tasks.json"), "utf8"));
+const tasks = JSON.parse(readFileSync(join(here, "tasks.json"), "utf8")).filter((t) => !only.length || only.includes(t.id));
+if (!tasks.length) throw new Error(`no task among ${only.join(", ")}`);
 const jobs = [];
 for (let run = 1; run <= Number(runsArg); run++) {
   for (const task of tasks) for (const agent of ["typed", "act-extract"]) jobs.push({ agent, task: task.id, run });
