@@ -1,0 +1,64 @@
+[
+  {
+    "id": "T01",
+    "kind": "open a page",
+    "prompt": "Open https://www.ecb.europa.eu/press/pr/date/2024/html/ecb.mp240912~67cb23badb.en.html (a central bank's press release). Copy the sentence that gives the new deposit facility rate, and the sentence that says when the changes take effect.",
+    "checks": ["Accordingly, the deposit facility rate will be decreased to 3.50%.", "The changes will take effect from 18 September 2024."]
+  },
+  {
+    "id": "T02",
+    "kind": "open a page",
+    "prompt": "Open https://arxiv.org/abs/1706.03762 (a paper's abstract page). Copy the line that says when the paper was submitted and last revised, and the first sentence of its abstract.",
+    "checks": ["Submitted on 12 Jun 2017 (v1), last revised 2 Aug 2023 (this version, v7)", "The dominant sequence transduction models are based on complex recurrent or convolutional neural networks in an encoder-decoder configuration."]
+  },
+  {
+    "id": "T03",
+    "kind": "find a release on a site",
+    "prompt": "Starting from https://www.python.org/, find the release page of Python 3.12.0 by following the site's links, and copy the line that gives its release date.",
+    "checks": ["Oct. 2, 2023"]
+  },
+  {
+    "id": "T04",
+    "kind": "find a release on a site",
+    "prompt": "Starting from https://www.federalreserve.gov/, find the FOMC statement released on 18 September 2024 by following the site's links, and copy the sentence that states the Committee's decision on the target range for the federal funds rate.",
+    "checks": ["the Committee decided to lower the target range for the federal funds rate by 1/2 percentage point to 4-3/4 to 5 percent"]
+  },
+  {
+    "id": "T05",
+    "kind": "fill a search form",
+    "prompt": "Use the search form on https://www.rfc-editor.org/search/ to search for HTTP Semantics. In the results, find RFC 9110 and copy its title, its status and its publication month as the results list them.",
+    "checks": ["HTTP Semantics", "Internet Standard", "June 2022"]
+  },
+  {
+    "id": "T06",
+    "kind": "fill a search form",
+    "prompt": "Use the search form on https://find-and-update.company-information.service.gov.uk/ (a public company register) to find MARKS AND SPENCER GROUP P.L.C., open its company page, and copy its company number and the date it was incorporated.",
+    "checks": ["04256886", "23 July 2001"]
+  },
+  {
+    "id": "T07",
+    "kind": "copy lines from a table",
+    "prompt": "On https://en.wikipedia.org/wiki/List_of_tallest_buildings, in the table of the tallest buildings in the world, copy the row for Taipei 101: its rank, height in metres and feet, floors, city, country and year.",
+    "checks": ["508", "1,667", "5 below ground", "Taipei", "Taiwan", "2004"]
+  },
+  {
+    "id": "T08",
+    "kind": "copy lines from a table",
+    "prompt": "On https://www.python.org/downloads/, in the table of active Python releases, copy the row for Python 3.12: its maintenance status, first release date and end of support.",
+    "checks": ["security", "2023-10-02", "2028-10"]
+  },
+  {
+    "id": "T09",
+    "kind": "save a document",
+    "prompt": "Save the PDF at https://www.federalreserve.gov/monetarypolicy/files/monetary20240731a1.pdf into the save directory, and copy, from the saved document, the sentence that states the Committee's decision on the target range for the federal funds rate.",
+    "checks": ["the Committee decided to maintain the target range for the federal funds rate at 5-1/4 to 5-1/2 percent"],
+    "saved_pdf_marker": "For release at 2:00 p.m. EDT"
+  },
+  {
+    "id": "T10",
+    "kind": "save a document",
+    "prompt": "On https://arxiv.org/abs/1810.04805, find the link to the paper's PDF, save the PDF into the save directory, and copy, from the saved document, the first sentence of its abstract.",
+    "checks": ["We introduce a new language representation model called BERT, which stands for Bidirectional Encoder Representations from Transformers."],
+    "saved_pdf_marker": "BERT: Pre-training of Deep Bidirectional Transformers"
+  }
+]
