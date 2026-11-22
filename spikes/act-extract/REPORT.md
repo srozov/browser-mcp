@@ -1,6 +1,9 @@
 # Spike: AI-driven act/extract next to the typed tools (#5)
 
-Run on 2026-11-22.
+Run on 2026-11-22, in two rounds:
+- **round 1:** 10 read tasks of the kinds #5 names;
+- **round 2:** a new problem, extracting listings from a marketplace's search page, the kind of page the typed tools
+  were not built on.
 
 ## Question
 
@@ -62,7 +65,7 @@ browsers.
     tokens.
 - **Wall time:** from the session's start to its exit.
 
-## Results
+## Results (round 1)
 
 **The rule keeps the core typed-only.** Act/extract succeeded less often (19 of 20 against 20 of 20) and cost 2.8
 times as much in total ($0.166 against $0.059 for 20 runs).
@@ -159,15 +162,91 @@ Each costs a turn. The typed totals above include them.
   tested.
 - **The sample.** 10 tasks, run twice each. The success gap is one run; the cost gap held on 8 of the 10 tasks.
 
+## Round 2: a new problem
+
+Round 1's pages are static, well labelled and of the kind the typed tools were built on: they come from the page
+readers' own server, tuned on that work. Round 2 asks whether round 1 favoured them, with a task neither agent's tools
+or prompts were made for.
+
+**The task (T11):** "Extract 50 e-mountain bike listings from ricardo.ch, within a 20 km radius of a Swiss town. Start
+at https://www.ricardo.ch/de/. For each listing give its title and price as the site shows them, and its URL, one
+listing per line: title | price | URL."
+- The site is a marketplace's JavaScript search: a cookie banner, 60 results a page, and a location filter that is a
+  zip-code field inside a dropdown, which reveals a radius combobox once a zip code is typed.
+- Each agent ran it 3 times, 2 runs at a time, with the same prompts and harness as round 1.
+
+**Grading** ([listings-reference.mjs](listings-reference.mjs)):
+- **The reference set.** These are the listings that the marketplace's own searches return within 20 km of that town. They
+  were captured through the daemon just before and just after the runs, and once 15 minutes earlier. The searches:
+  - the E-Mountainbike bike type (212 listings);
+  - "e-mountainbike" in the bikes category (265);
+  - "e-mtb" in the bikes category (241).
+
+  That makes 282 listings in all. A listing that only the plain text search returns, such as a bike stand or a brake
+  set, is not a bike.
+- **Success.** A run succeeds when it gives 50 distinct listings from that set, each with its title as the result card
+  shows it and one of the card's prices (or a bid within the range the captures saw).
+
+| Agent | Succeeded | Without page code | Caller cost | Helper cost | Total cost | Wall time (mean) |
+|---|---|---|---|---|---|---|
+| typed | 1/3 | – | $0.0500 | – | $0.0500 | 184 s |
+| act/extract | 3/3 | 0/3 | $0.0507 | $0.1035 | $0.1542 | 254 s |
+
+| Agent | Run | Result | Page code | Turns | Caller | Helper (requests) | Total | Wall |
+|---|---|---|---|---|---|---|---|---|
+| typed | 1 | 50 exact, 50 in area, 50 given | – | 26 | $0.0136 | – | $0.0136 | 177 s |
+| typed | 2 | 49 exact, 50 in area, 50 given | – | 27 | $0.0151 | – | $0.0151 | 153 s |
+| typed | 3 | 36 exact, 39 in area, 50 given, 11 unknown | – | 34 | $0.0213 | – | $0.0213 | 222 s |
+| act-extract | 1 | 50 exact, 50 in area, 50 given | yes | 29 | $0.0170 | $0.0542 (25) | $0.0712 | 300 s |
+| act-extract | 2 | 50 exact, 50 in area, 50 given | yes | 24 | $0.0144 | $0.0192 (9) | $0.0335 | 180 s |
+| act-extract | 3 | 50 exact, 50 in area, 50 given | yes | 29 | $0.0194 | $0.0301 (13) | $0.0494 | 281 s |
+
+**`act` and `extract` failed at the task's two hard steps in every run.**
+- `act` could not set the location filter in any run ("No object generated"). The agent filled the zip-code field
+  with page code instead; `act` managed only the click on 20 km.
+- `extract` could not return the 50 listings in one call: it failed (run 1) or returned an empty list (run 2).
+  - In run 1 the agent then asked for 10 cards at a time, which gave the titles and prices; it took the URLs from
+    page code.
+  - Runs 2 and 3 scraped every field from the result cards with `page.evaluate`.
+
+  Page code is what their prompt ruled out, and no run would have succeeded with `act` and `extract` alone.
+
+**The typed agent did the same scraping with the daemon's console.**
+- Its typed tools opened the search, dismissed the banner and set the filter: with `type` and `click` in run 1, and
+  through `browser_eval` in run 3.
+- Every run then read the result cards with `browser_eval`.
+
+**So both agents leaned on page code over the result cards.** The typed agent's two misses were its own judgment,
+not its tools:
+- run 3 searched "e-mountain bike", with a space; the results include non-electric mountain bikes and brake sets. It
+  kept 11 of them, and its report says so;
+- run 2 joined a card's size line to one title ("E-Bike Trelago Furly 29" Grösse 46cm").
+
+**Cost and time.**
+- Act/extract cost 3.1 times as much ($0.154 against $0.050) and took longer (254 s against 184 s a run).
+- These 3 act/extract runs used 7% of the MiniMax plan's 5-hour window (94% left before, 87% after).
+
+**What round 2 shows.**
+- On a problem the typed tools were not built for, `act` and `extract` did worse, not better: they failed the steps
+  that make the task hard, in every run.
+- What did the work for both agents is a code console over the page, which the daemon already has (`browser_eval`).
+- By the rule on round 2 alone, the act/extract agent fails on cost: it succeeded more often (3 against 1 of 3) at
+  3.1 times the cost. `act` and `extract` by themselves succeeded in no run.
+- The sample is 3 runs each. The typed agent's misses (which search to use, what to keep) are a caller's judgment that
+  a prompt could address; that was not tested.
+
 ## Decision
 
-The rule's answer: **keep the core typed-only.** Act/extract succeeded less often (19 against 20), and cost more
-(2.8 times in total); extract alone tied in success at 3.5 times the cost.
+The rule's answer: **keep the core typed-only.**
+- **Round 1:** act/extract succeeded less often (19 against 20) and cost 2.8 times as much in total. Extract alone tied
+  in success at 3.5 times the cost.
+- **Round 2,** a problem the typed tools were not built for: `act` and `extract` failed its hard steps in every run.
+  Both agents finished it with page code. The act/extract agent succeeded more often there, at 3.1 times the cost.
 
 For a later pipeline that relies on AI-driven steps today, this means it moves onto the daemon with an agent using
 the typed tools, or keeps its own browser code. The daemon gets no `act` or `extract` tool.
 
-## Every run
+## Every run (round 1)
 
 <details>
 <summary>40 runs</summary>
@@ -219,20 +298,35 @@ the typed tools, or keeps its own browser code. The daemon gets no `act` or `ext
 
 </details>
 
-[results.json](results.json) holds every run's numbers, as `grade.mjs` wrote them.
+[results.json](results.json) and [results-round2.json](results-round2.json) hold every run's numbers, as
+`grade.mjs` wrote them.
 
 ## Rerun
 
 1. Extract the first server and install its dependencies:
    `git archive 58fb9db | tar -x -C <dir> && (cd <dir> && npm ci)`.
 2. Start the daemon (README.md); search is not used, so its MiniMax key may be a placeholder.
-3. Run the batch, then grade it:
+3. Set the environment both rounds use:
 
    ```bash
-   SPIKE_DAEMON_URL=http://127.0.0.1:<port>/mcp SPIKE_OLD_SERVER=<dir>/stagehand-mcp.mjs \
-   SPIKE_HELPER_MODEL=MiniMax-M3.1-Flash MINIMAX_API_KEY=<key> \
-   node spikes/act-extract/batch.mjs <out dir> 2 4
+   export SPIKE_DAEMON_URL=http://127.0.0.1:<port>/mcp SPIKE_OLD_SERVER=<dir>/stagehand-mcp.mjs \
+     SPIKE_HELPER_MODEL=MiniMax-M3.1-Flash MINIMAX_API_KEY=<key>
+   ```
+
+4. Round 1: run tasks T01 to T10 twice each, 4 at a time, then grade:
+
+   ```bash
+   node spikes/act-extract/batch.mjs <out dir> 2 4 T01 T02 T03 T04 T05 T06 T07 T08 T09 T10
    node spikes/act-extract/grade.mjs <out dir>
+   ```
+
+5. Round 2: capture the reference set, run T11 three times per agent, 2 at a time, capture again, then grade:
+
+   ```bash
+   node spikes/act-extract/listings-reference.mjs $SPIKE_DAEMON_URL <out dir 2>/reference-1-before.json
+   node spikes/act-extract/batch.mjs <out dir 2> 3 2 T11
+   node spikes/act-extract/listings-reference.mjs $SPIKE_DAEMON_URL <out dir 2>/reference-2-after.json
+   node spikes/act-extract/grade.mjs <out dir 2>
    ```
 
 Each run is a headless Claude Code session, so `claude` must be installed and signed in. The live pages can
