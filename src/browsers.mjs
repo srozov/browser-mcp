@@ -144,8 +144,8 @@ export function start({ profile: name, saveDir = null } = {}) {
 export function get(handle) {
   const b = table.get(handle);
   if (!b) {
-    throw new Error(`unknown browser "${handle}": it was closed, closed after ${config.idleMs / 60_000} idle minutes, ` +
-      "or the daemon restarted; call start for a new one");
+    throw new Error(`unknown browser "${handle}": it is not a handle start returned, or it was closed, closed after ` +
+      `${config.idleMs / 60_000} idle minutes, or the daemon restarted; call start and pass the handle it returns`);
   }
   return b;
 }

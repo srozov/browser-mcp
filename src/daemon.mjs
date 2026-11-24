@@ -174,15 +174,21 @@ const DAY = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(
   "not a calendar day (YYYY-MM-DD)",
 );
 
+// Every browser tool's handle. Agents called start in parallel with browse, on a handle they made up.
+const HANDLE = z.string().min(1).describe("the handle start returned: call start first, on its own, and wait for its reply");
+
 function server() {
   const s = new McpServer({ name: "browser-mcp", version: VERSION });
   s.tool(
     "start",
-    `Start a browser of your own: a real, headed Chrome. Returns its handle; pass it as \`browser\` to every other call.
+    `Start a browser of your own: a real, headed Chrome. Returns its handle, a random id; pass it as \`browser\` to every
+other call. Call start on its own and wait for its reply before browse, acquire or browser_eval: a handle made up
+before then (such as "b1") fails as an unknown browser.
 Without \`profile\` it runs on a throwaway copy of the base profile. With \`profile\` (the name of a profile the operator
 made, e.g. a signed-in one) it runs on that profile itself, with its cookies and logins. While your browser is open no
-other browser can open that profile: start fails at once, naming the browser that holds it. Your browser ends on close, after 10
-idle minutes, or when the service stops. At most 4 run at once: at the cap, start fails at once, so close one or try later.
+other browser can open that profile: start fails at once, naming the browser that holds it. Your browser ends on the
+close tool, after 10 idle minutes, or when the service stops. At most 4 run at once: at the cap, start fails at once,
+so close one or try later.
 With \`save_dir\` (an absolute path to an existing directory) acquire saves pages and documents under
 <save_dir>/sources/; without it nothing can be saved: acquire fails, and a download is reported as not saved.`,
     { profile: z.string().min(1).optional(), save_dir: z.string().min(1).optional() },
@@ -196,8 +202,8 @@ With \`save_dir\` (an absolute path to an existing directory) acquire saves page
   );
   s.tool(
     "close",
-    "Close your browser. A throwaway profile copy is deleted; a named profile stays, with its cookies and logins, for the next start on it.",
-    { browser: z.string().min(1) },
+    "Close your browser. This is its own tool, not a browse action. A throwaway profile copy is deleted; a named profile stays, with its cookies and logins, for the next start on it.",
+    { browser: HANDLE },
     async ({ browser }) => {
       try {
         await close(browser, "close");
@@ -232,6 +238,7 @@ Actions (each takes only its own arguments; any other is refused by name):
 - back, scroll: go back; scroll down to load more.
 - tabs, switch_tab {tab}: list or switch your browser's tabs.
 - screenshot: an image of the current view, in the reply; it is not kept.
+There is no close action: end your browser with the close tool.
 How to use it:
 - Start each page with observe: its outline shows forms with their fields and states, tables with their
   row counts, collapsed lists and dialogs, each element with a ref. Then observe with a query (words from
@@ -253,7 +260,7 @@ How to use it:
   and the reply says so. A link that opens a document in a new tab or downloads it is acquired for you: that
   reply, or the next one, gives the source_id. Acquire a PDF's URL; do not open it.`,
     {
-      browser: z.string().min(1),
+      browser: HANDLE,
       action: z.enum(Object.keys(TAKES)),
       url: z.string().optional(),
       ref: z.string().optional(),
@@ -303,13 +310,13 @@ sources by this source_id. Each call has a ${ACQUIRE_LIMIT_MS / 60_000}-minute l
 browser is not restarted. A link into a site's inline document viewer stands for the document it shows: acquire the
 document's own URL. Publication date: http_last_modified can be the day the file was fetched (newswires); prefer the
 date printed on the document or listed next to it, or pdf_created.`,
-    { browser: z.string().min(1), url: z.string().optional(), ref: z.string().optional(), current_page: z.boolean().optional() },
+    { browser: HANDLE, url: z.string().optional(), ref: z.string().optional(), current_page: z.boolean().optional() },
     async (args) => tool("acquire", args, (b) => acquire(b, args), { limit: ACQUIRE_LIMIT_MS, reset: false }),
   );
   s.tool(
     "browser_eval",
     DESCRIPTION(TEST_LIMIT ?? 120_000),
-    { browser: z.string().min(1), code: z.string().min(1).max(CODE_CHARS) },
+    { browser: HANDLE, code: z.string().min(1).max(CODE_CHARS) },
     async (args) => tool("browser_eval", args, (b, callState) => evaluate(b, args.code, callState), { kill: killBrowser }),
   );
   s.tool(
