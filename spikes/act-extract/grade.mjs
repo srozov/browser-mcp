@@ -13,7 +13,7 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync, openSyn
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Helper-model list prices, USD per million tokens. A cache write is priced as input.
+// MiniMax list prices (a helper, or a MiniMax caller), USD per million tokens. A cache write is priced as input.
 const HELPER_PRICES = {
   "MiniMax-M3.1-Flash": { input: 0.15, output: 0.6, cache_read: 0.015 },
   "MiniMax-M3": { input: 0.3, output: 1.2, cache_read: 0.06 },
@@ -127,8 +127,11 @@ for (const agent of ["typed", "act-extract"]) {
     const saved = task.saved_pdf_marker ? savedPdf(join(dir, "save"), task.saved_pdf_marker) : null;
     const ended = r.result?.subtype === "success" && !r.timed_out;
     const usage = Object.values(r.result?.modelUsage ?? {});
-    const callerTokens = usage.reduce((n, u) => n + u.inputTokens + u.outputTokens + u.cacheReadInputTokens + u.cacheCreationInputTokens, 0);
-    const caller = r.result?.total_cost_usd ?? 0;
+    // A MiniMax caller is priced from its meter's tokens; a Claude caller from the session's own cost report.
+    const m = r.caller_meter;
+    const callerTokens = m ? m.input_tokens + m.output_tokens + m.cache_read_input_tokens + m.cache_creation_input_tokens
+      : usage.reduce((n, u) => n + u.inputTokens + u.outputTokens + u.cacheReadInputTokens + u.cacheCreationInputTokens, 0);
+    const caller = m ? helperCost(r.caller_model, m) : r.result?.total_cost_usd ?? 0;
     const helper = helperCost(r.helper_model, r.helper);
     runs.push({
       agent, task: r.task, run: r.run,
