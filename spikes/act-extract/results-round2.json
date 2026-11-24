@@ -1,0 +1,264 @@
+{
+ "typed": {
+  "runs": 3,
+  "successes": 1,
+  "successes_without_page_code": 1,
+  "caller_usd": 0.050009689999999996,
+  "helper_usd": 0,
+  "total_usd": 0.050009689999999996,
+  "usd_per_success": 0.050009689999999996,
+  "mean_caller_tokens": 483063.6666666667,
+  "mean_helper_tokens": 0,
+  "mean_wall_s": 183.74699999999999,
+  "median_wall_s": 176.906
+ },
+ "act_extract": {
+  "runs": 3,
+  "successes": 3,
+  "successes_without_page_code": 0,
+  "caller_usd": 0.05073913,
+  "helper_usd": 0.10345715999999999,
+  "total_usd": 0.15419629,
+  "usd_per_success": 0.05139876333333334,
+  "mean_caller_tokens": 419043.6666666667,
+  "mean_helper_tokens": 199049,
+  "mean_wall_s": 253.62033333333338,
+  "median_wall_s": 280.728
+ },
+ "read_only": {
+  "typed": {
+   "runs": 0,
+   "successes": 0,
+   "successes_without_page_code": 0,
+   "caller_usd": 0,
+   "helper_usd": 0,
+   "total_usd": 0,
+   "usd_per_success": null,
+   "mean_caller_tokens": 0,
+   "mean_helper_tokens": 0,
+   "mean_wall_s": 0,
+   "median_wall_s": 0
+  },
+  "act_extract": {
+   "runs": 0,
+   "successes": 0,
+   "successes_without_page_code": 0,
+   "caller_usd": 0,
+   "helper_usd": 0,
+   "total_usd": 0,
+   "usd_per_success": null,
+   "mean_caller_tokens": 0,
+   "mean_helper_tokens": 0,
+   "mean_wall_s": 0,
+   "median_wall_s": 0
+  }
+ },
+ "rule": {
+  "act_extract_succeeds_at_least_as_often": true,
+  "act_extract_costs_less": false,
+  "add_act_extract": false
+ },
+ "runs": [
+  {
+   "agent": "typed",
+   "task": "T11",
+   "run": 1,
+   "success": true,
+   "listings": {
+    "reported": 50,
+    "in_area": 50,
+    "not_bike": 0,
+    "unknown": 0,
+    "exact": 50
+   },
+   "ended": true,
+   "missing": [],
+   "saved": null,
+   "turns": 26,
+   "wall_s": 176.906,
+   "caller_tokens": 411688,
+   "caller_usd": 0.0136154,
+   "helper_tokens": 0,
+   "helper_requests": 0,
+   "helper_usd": 0,
+   "total_usd": 0.0136154,
+   "tool_calls": {
+    "mcp__browser__start": 1,
+    "mcp__browser__browse": 17,
+    "mcp__browser__browser_eval": 6,
+    "mcp__browser__close": 1
+   },
+   "stagehand": null,
+   "page_code": null
+  },
+  {
+   "agent": "typed",
+   "task": "T11",
+   "run": 2,
+   "success": false,
+   "listings": {
+    "reported": 50,
+    "in_area": 50,
+    "not_bike": 0,
+    "unknown": 0,
+    "exact": 49
+   },
+   "ended": true,
+   "missing": [],
+   "saved": null,
+   "turns": 27,
+   "wall_s": 152.561,
+   "caller_tokens": 397803,
+   "caller_usd": 0.015130210000000002,
+   "helper_tokens": 0,
+   "helper_requests": 0,
+   "helper_usd": 0,
+   "total_usd": 0.015130210000000002,
+   "tool_calls": {
+    "mcp__browser__start": 1,
+    "mcp__browser__browse": 22,
+    "mcp__browser__browser_eval": 2,
+    "mcp__browser__close": 1
+   },
+   "stagehand": null,
+   "page_code": null
+  },
+  {
+   "agent": "typed",
+   "task": "T11",
+   "run": 3,
+   "success": false,
+   "listings": {
+    "reported": 50,
+    "in_area": 39,
+    "not_bike": 0,
+    "unknown": 11,
+    "exact": 36
+   },
+   "ended": true,
+   "missing": [],
+   "saved": null,
+   "turns": 34,
+   "wall_s": 221.774,
+   "caller_tokens": 639700,
+   "caller_usd": 0.021264079999999998,
+   "helper_tokens": 0,
+   "helper_requests": 0,
+   "helper_usd": 0,
+   "total_usd": 0.021264079999999998,
+   "tool_calls": {
+    "mcp__browser__start": 1,
+    "mcp__browser__browse": 22,
+    "mcp__browser__browser_eval": 9,
+    "mcp__browser__close": 1
+   },
+   "stagehand": null,
+   "page_code": null
+  },
+  {
+   "agent": "act-extract",
+   "task": "T11",
+   "run": 1,
+   "success": true,
+   "listings": {
+    "reported": 50,
+    "in_area": 50,
+    "not_bike": 0,
+    "unknown": 0,
+    "exact": 50
+   },
+   "ended": true,
+   "missing": [],
+   "saved": null,
+   "turns": 29,
+   "wall_s": 300.201,
+   "caller_tokens": 450490,
+   "caller_usd": 0.01698784,
+   "helper_tokens": 298649,
+   "helper_requests": 25,
+   "helper_usd": 0.05423061,
+   "total_usd": 0.07121845,
+   "tool_calls": {
+    "mcp__stagehand__stagehand_eval": 24,
+    "mcp__stagehand__stagehand_screenshot": 4
+   },
+   "stagehand": {
+    "act": 8,
+    "extract": 9,
+    "observe": 1,
+    "page_reads": 14
+   },
+   "page_code": true
+  },
+  {
+   "agent": "act-extract",
+   "task": "T11",
+   "run": 2,
+   "success": true,
+   "listings": {
+    "reported": 50,
+    "in_area": 50,
+    "not_bike": 0,
+    "unknown": 0,
+    "exact": 50
+   },
+   "ended": true,
+   "missing": [],
+   "saved": null,
+   "turns": 24,
+   "wall_s": 179.932,
+   "caller_tokens": 303290,
+   "caller_usd": 0.01438178,
+   "helper_tokens": 116896,
+   "helper_requests": 9,
+   "helper_usd": 0.01916169,
+   "total_usd": 0.03354347,
+   "tool_calls": {
+    "mcp__stagehand__stagehand_eval": 19,
+    "mcp__stagehand__stagehand_screenshot": 4
+   },
+   "stagehand": {
+    "act": 6,
+    "extract": 1,
+    "observe": 0,
+    "page_reads": 8
+   },
+   "page_code": true
+  },
+  {
+   "agent": "act-extract",
+   "task": "T11",
+   "run": 3,
+   "success": true,
+   "listings": {
+    "reported": 50,
+    "in_area": 50,
+    "not_bike": 0,
+    "unknown": 0,
+    "exact": 50
+   },
+   "ended": true,
+   "missing": [],
+   "saved": null,
+   "turns": 29,
+   "wall_s": 280.728,
+   "caller_tokens": 503351,
+   "caller_usd": 0.01936951,
+   "helper_tokens": 181602,
+   "helper_requests": 13,
+   "helper_usd": 0.030064860000000002,
+   "total_usd": 0.049434370000000005,
+   "tool_calls": {
+    "mcp__stagehand__stagehand_eval": 23,
+    "mcp__stagehand__stagehand_screenshot": 5
+   },
+   "stagehand": {
+    "act": 8,
+    "extract": 1,
+    "observe": 2,
+    "page_reads": 15
+   },
+   "page_code": true
+  }
+ ]
+}
