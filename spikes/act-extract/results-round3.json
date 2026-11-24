@@ -1,0 +1,165 @@
+{
+ "caller_model": "MiniMax-M3.1-Flash",
+ "effort_medium": {
+  "typed": {
+   "runs": 3,
+   "successes": 2,
+   "successes_without_page_code": 2,
+   "caller_usd": 0.11134069499999999,
+   "helper_usd": 0,
+   "total_usd": 0.11134069499999999,
+   "usd_per_success": 0.055670347499999995,
+   "mean_caller_tokens": 1367893.6666666667,
+   "mean_helper_tokens": 0,
+   "mean_wall_s": 445.874,
+   "median_wall_s": 235.588
+  },
+  "runs": [
+   {
+    "agent": "typed",
+    "task": "T11",
+    "run": 1,
+    "success": true,
+    "listings": {
+     "reported": 60,
+     "in_area": 60,
+     "not_bike": 0,
+     "unknown": 0,
+     "exact": 60
+    },
+    "ended": true,
+    "missing": [],
+    "saved": null,
+    "turns": 36,
+    "wall_s": 235.588,
+    "caller_tokens": 662713,
+    "caller_usd": 0.0203973,
+    "helper_tokens": 0,
+    "helper_requests": 0,
+    "helper_usd": 0,
+    "total_usd": 0.0203973,
+    "tool_calls": {
+     "mcp__browser__start": 1,
+     "mcp__browser__browse": 17,
+     "mcp__browser__browser_eval": 15,
+     "mcp__browser__acquire": 1,
+     "mcp__browser__close": 1
+    },
+    "stagehand": null,
+    "page_code": null
+   },
+   {
+    "agent": "typed",
+    "task": "T11",
+    "run": 2,
+    "success": false,
+    "listings": {
+     "reported": 0,
+     "in_area": 0,
+     "not_bike": 0,
+     "unknown": 0,
+     "exact": 0
+    },
+    "ended": false,
+    "missing": [],
+    "saved": null,
+    "turns": null,
+    "wall_s": 900.076,
+    "caller_tokens": 2869614,
+    "caller_usd": 0.07275348,
+    "helper_tokens": 0,
+    "helper_requests": 0,
+    "helper_usd": 0,
+    "total_usd": 0.07275348,
+    "tool_calls": {
+     "mcp__browser__start": 1,
+     "mcp__browser__browse": 22,
+     "mcp__browser__browser_eval": 39
+    },
+    "stagehand": null,
+    "page_code": null
+   },
+   {
+    "agent": "typed",
+    "task": "T11",
+    "run": 3,
+    "success": true,
+    "listings": {
+     "reported": 50,
+     "in_area": 50,
+     "not_bike": 0,
+     "unknown": 0,
+     "exact": 50
+    },
+    "ended": true,
+    "missing": [],
+    "saved": null,
+    "turns": 31,
+    "wall_s": 201.958,
+    "caller_tokens": 571354,
+    "caller_usd": 0.018189915,
+    "helper_tokens": 0,
+    "helper_requests": 0,
+    "helper_usd": 0,
+    "total_usd": 0.018189915,
+    "tool_calls": {
+     "mcp__browser__start": 1,
+     "mcp__browser__browse": 12,
+     "mcp__browser__browser_eval": 15,
+     "mcp__browser__acquire": 1,
+     "mcp__browser__close": 1
+    },
+    "stagehand": null,
+    "page_code": null
+   }
+  ]
+ },
+ "effort_high": {
+  "typed": {
+   "runs": 1,
+   "successes": 0,
+   "successes_without_page_code": 0,
+   "caller_usd": 0.08696097,
+   "helper_usd": 0,
+   "total_usd": 0.08696097,
+   "usd_per_success": null,
+   "mean_caller_tokens": 3305511,
+   "mean_helper_tokens": 0,
+   "mean_wall_s": 900.133,
+   "median_wall_s": 900.133
+  },
+  "runs": [
+   {
+    "agent": "typed",
+    "task": "T11",
+    "run": 1,
+    "success": false,
+    "listings": {
+     "reported": 0,
+     "in_area": 0,
+     "not_bike": 0,
+     "unknown": 0,
+     "exact": 0
+    },
+    "ended": false,
+    "missing": [],
+    "saved": null,
+    "turns": null,
+    "wall_s": 900.133,
+    "caller_tokens": 3305511,
+    "caller_usd": 0.08696097,
+    "helper_tokens": 0,
+    "helper_requests": 0,
+    "helper_usd": 0,
+    "total_usd": 0.08696097,
+    "tool_calls": {
+     "mcp__browser__start": 1,
+     "mcp__browser__browse": 25,
+     "mcp__browser__browser_eval": 44
+    },
+    "stagehand": null,
+    "page_code": null
+   }
+  ]
+ }
+}

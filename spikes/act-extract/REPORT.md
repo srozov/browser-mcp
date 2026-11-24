@@ -1,9 +1,11 @@
 # Spike: AI-driven act/extract next to the typed tools (#5)
 
-Run on 2026-11-22, in two rounds:
+Run on 2026-11-22 and 2026-11-24, in three rounds:
 - **round 1:** 10 read tasks of the kinds #5 names;
 - **round 2:** a new problem, extracting listings from a marketplace's search page, the kind of page the typed tools
-  were not built on.
+  were not built on;
+- **round 3:** the same new problem, with MiniMax as the agent's own model on the typed tools, instead of only as a
+  helper inside `act` and `extract`.
 
 ## Question
 
@@ -235,6 +237,69 @@ not its tools:
 - The sample is 3 runs each. The typed agent's misses (which search to use, what to keep) are a caller's judgment that
   a prompt could address; that was not tested.
 
+## Round 3: MiniMax as the agent on the typed tools
+
+Rounds 1 and 2 give both agents the same model, Claude Haiku 5.5, and use MiniMax only for `act` and `extract`. So
+they compare tools, and say nothing about MiniMax driving the typed tools itself. That matters for the operator, whose
+MiniMax plan is a flat monthly fee: a MiniMax agent would move the agent's cost off the per-token Claude side.
+
+**Setup.**
+- The same headless Claude Code sessions, prompt ([typed.md](typed.md)), tools and task (T11) as round 2's typed
+  agent. Only the model changed: MiniMax-M3.1-Flash, through MiniMax's Anthropic-compatible API. That is the route
+  MiniMax's own CLI sets Claude Code up for; here it was set per session, leaving the machine's Claude Code settings
+  alone.
+- A local meter between the session and MiniMax held the key and recorded every response's tokens. From the second
+  run on, it also removed the account and device ids that Claude Code puts in each request's metadata.
+- The plan's quota was read with `mmx quota show` before and after.
+
+**The effort setting matters.**
+- Claude Code sends Haiku 5.5 its default effort, medium. For a model it does not know it sends high. MiniMax honours
+  the setting (its docs say so; its thinking cannot be switched off).
+- At high, the first run thought about 20 times as much as Haiku's runs, and ran out of time. The next three runs set
+  `--effort medium`, as Haiku gets.
+
+| Run | Effort | Result | Thinking | Model calls | List-price cost | Quota used | Wall |
+|---|---|---|---|---|---|---|---|
+| high, 1 | high | no report: out of time at 15 min | 60 blocks, 116,000 characters | 70 | $0.087 | 9% | 900 s |
+| medium, 1 | medium | 60 given, 60 exact | 25 blocks, 10,000 characters | 36 | $0.020 | 2% | 236 s |
+| medium, 2 | medium | no report: out of time at 15 min | 59 blocks, 103,000 characters | 62 | $0.073 | about 8% | 900 s |
+| medium, 3 | medium | 50 given, 50 exact | 24 blocks, 9,000 characters | 30 | $0.018 | about 2% | 202 s |
+
+"Quota used" is the share of the plan's 5-hour window. Medium runs 2 and 3 ran together and used 10% between them; the
+split follows their tokens. The list-price cost is at MiniMax's prices for M3.1-Flash. On the operator's plan nothing is
+billed per token: the window is what runs out.
+
+**What the runs did.**
+- When MiniMax finished, its lists were perfect: every listing an e-MTB within 20 km, with its card's title and price.
+  Medium run 1 listed all 60 cards of the first page, although its report says it capped them at 50.
+- It used the typed tools to search and set the filter, and the code console to read the result cards, as Haiku did.
+- Both runs that failed had the listings early, then went on to check them.
+  - The high-effort run concluded that "the site's radius filter includes listings well outside 20 km (e.g. Auw, Hünenberg)".
+    Both towns are about 16 and 18 km from Horgen in a straight line.
+  - Both fetched listing pages to read each seller's location, and the high-effort run started computing distances
+    through a geo API. Neither wrote a report before the time limit.
+  - Medium effort made the detour less likely (1 of 3 runs, against 1 of 1 at high), but did not remove it.
+
+**Compared with round 2 on the same task:**
+
+| Agent | Tools | Succeeded (50 exact) | Runs with no report | Mean time | Cost |
+|---|---|---|---|---|---|
+| Haiku 5.5 | typed | 1/3 (50, 49, 36 exact) | 0 | 184 s | $0.050 for 3 runs |
+| Haiku 5.5 | act/extract (MiniMax helper) | 3/3, all by page code | 0 | 254 s | $0.154 for 3 runs |
+| MiniMax-M3.1-Flash, effort medium | typed | 2/3 (60, 50 exact) | 1 | 446 s | $0.111 for 3 runs at list price; about 12% of a 5-hour window |
+
+**What round 3 shows.**
+- MiniMax can drive the typed tools. Its good runs matched Haiku's best, in about the same time.
+- Its failure is its own judgment again: it distrusts a correct filter, and spends its time re-checking the answer it
+  already has. Haiku's misses were judgment too, but different (a looser search, a glued title), and it always
+  finished.
+- On the operator's plan, a good ricardo run costs about 2% of a 5-hour window and a detour about 8–9%. Several
+  readers on MiniMax at once could empty a window in an afternoon if detours are common.
+- It adds no case for `act` and `extract`: MiniMax did better as the agent on the typed tools than as a helper inside
+  them, where it failed T11's hard steps in every run (round 2).
+- The sample is 3 runs at medium. A time limit nearer the good runs' times, or a lower effort, might cut the detours;
+  neither was tested.
+
 ## Decision
 
 The rule's answer: **keep the core typed-only.**
@@ -242,6 +307,9 @@ The rule's answer: **keep the core typed-only.**
   in success at 3.5 times the cost.
 - **Round 2,** a problem the typed tools were not built for: `act` and `extract` failed its hard steps in every run.
   Both agents finished it with page code. The act/extract agent succeeded more often there, at 3.1 times the cost.
+- **Round 3,** MiniMax as the agent: on the typed tools, at effort medium, it finished 2 of 3 runs with perfect lists,
+  and ran out of time on the third re-checking its answer. MiniMax worked better as the agent on the typed tools than
+  as the helper behind `act` and `extract`.
 
 For a later pipeline that relies on AI-driven steps today, this means it moves onto the daemon with an agent using
 the typed tools, or keeps its own browser code. The daemon gets no `act` or `extract` tool.
@@ -298,8 +366,9 @@ the typed tools, or keeps its own browser code. The daemon gets no `act` or `ext
 
 </details>
 
-[results.json](results.json) and [results-round2.json](results-round2.json) hold every run's numbers, as
-`grade.mjs` wrote them.
+[results.json](results.json), [results-round2.json](results-round2.json) and
+[results-round3.json](results-round3.json) hold every run's numbers, as `grade.mjs` wrote them.
+[T11-outputs.md](T11-outputs.md) shows every listing each T11 run gave, marked against the reference set.
 
 ## Rerun
 
@@ -327,6 +396,14 @@ the typed tools, or keeps its own browser code. The daemon gets no `act` or `ext
    node spikes/act-extract/batch.mjs <out dir 2> 3 2 T11
    node spikes/act-extract/listings-reference.mjs $SPIKE_DAEMON_URL <out dir 2>/reference-2-after.json
    node spikes/act-extract/grade.mjs <out dir 2>
+   ```
+
+6. Round 3: as round 2, with MiniMax as the typed agent's model (run.mjs takes the key from `MINIMAX_API_KEY`):
+
+   ```bash
+   SPIKE_CALLER_MODEL=MiniMax-M3.1-Flash SPIKE_CALLER_EFFORT=medium \
+     node spikes/act-extract/run.mjs typed T11 <run number> <out dir 3>
+   node spikes/act-extract/grade.mjs <out dir 3>
    ```
 
 Each run is a headless Claude Code session, so `claude` must be installed and signed in. The live pages can
