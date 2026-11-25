@@ -121,7 +121,11 @@ test("a linked PDF is saved with its pages, images and provenance; saved again i
   assert.equal(readFileSync(src.files.original).subarray(0, 5).toString(), "%PDF-");
   assert.match(readFileSync(source(dir, src.source_id, "pages", "0002.txt"), "utf8"), /Operating profit 210\.5/);
   assert.ok(existsSync(source(dir, src.source_id, "pages", "0002.png")));
+  assert.equal(src.files.reading, `${source(dir, src.source_id, "reading", "NNNN.txt")} (the same pages' text in reading order, a column's sentences together)`);
+  for (let n = 1; n <= 6; n++) assert.ok(existsSync(source(dir, src.source_id, "reading", `000${n}.txt`)));
+  assert.ok(!existsSync(source(dir, src.source_id, "reading", "0007.txt")));
   const [rec] = registry(dir);
+  assert.equal(rec.files.reading, `sources/${src.source_id}/reading/NNNN.txt (the same pages' text in reading order, a column's sentences together)`);
   assert.equal(rec.event, "acquired");
   assert.equal(rec.via, "link");
   assert.equal(rec.link_text, "Download pdf");
@@ -133,6 +137,7 @@ test("a linked PDF is saved with its pages, images and provenance; saved again i
   assert.equal(again.source_id, src.source_id);
   assert.equal(again.note, "already acquired; same bytes and source id");
   assert.equal(again.pages, 6);
+  assert.deepEqual(again.files, src.files);
   assert.deepEqual(registry(dir).map((x) => x.event), ["acquired", "acquired_again"]);
   assert.deepEqual(readdirSync(join(dir, "sources")).sort(), [".staging", "registry.jsonl", src.source_id]);
   assert.deepEqual(readdirSync(join(dir, "sources", ".staging")), []);

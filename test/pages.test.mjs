@@ -1,4 +1,4 @@
-// The page texts, page images and info of a PDF (poppler), and the sheet texts of an xlsx, without a daemon.
+// The page texts (layout and reading order), page images and info of a PDF (poppler), and the sheet texts of an xlsx, without a daemon.
 
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -18,8 +18,20 @@ test("a PDF gets one text and one image per page, numbered by PDF page, with its
   assert.deepEqual(info, { title: "Report (draft)", pages: 2, created: "2026-03-02T09:00:00Z", modified: null });
   assert.match(readFileSync(join(dir, "pages", "0002.txt"), "utf8"), /Operating profit 210\.5/);
   assert.doesNotMatch(readFileSync(join(dir, "pages", "0001.txt"), "utf8"), /Operating profit/);
+  assert.match(readFileSync(join(dir, "reading", "0002.txt"), "utf8"), /Operating profit 210\.5/);
   for (const n of ["0001", "0002"]) assert.equal(readFileSync(join(dir, "pages", `${n}.png`)).subarray(1, 4).toString(), "PNG");
+  assert.ok(existsSync(join(dir, "reading", "0001.txt")));
   assert.ok(!existsSync(join(dir, "pages", "0003.txt")));
+  assert.ok(!existsSync(join(dir, "reading", "0003.txt")));
+});
+
+test("a two-column page's reading-order text keeps a sentence of a column whole; its layout text breaks it", async () => {
+  const [file, out] = [join(dir, "columns.pdf"), join(dir, "columns")];
+  writeFileSync(file, pdf([[["Revenue grew by twelve percent", "Headcount stayed flat across"], ["over the year to March.", "all three regions."]]]));
+  await preparePdf(file, out);
+  const text = (layer) => readFileSync(join(out, layer, "0001.txt"), "utf8").replace(/\s+/g, " ");
+  assert.ok(text("reading").includes("Revenue grew by twelve percent over the year to March."), text("reading"));
+  assert.ok(!text("pages").includes("Revenue grew by twelve percent over the year to March."), text("pages"));
 });
 
 test("a file that is not a PDF fails with poppler's reason", async () => {
