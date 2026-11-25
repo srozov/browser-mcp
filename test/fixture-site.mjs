@@ -220,6 +220,10 @@ const PAGES = {
       socket.onmessage = (event) => say("MESSAGE " + event.data);
       socket.onerror = () => say("ERROR");
     }</script></main></body></html>`,
+  // Requests whose https hop goes to a name that does not resolve, every few milliseconds: connections the policy
+  // proxy refuses while a navigation away from the page fails.
+  "ir.issuer.test/noisy": `<html><head><title>Noisy</title></head><body><main><p>NOISY PAGE</p>
+    <script>let n = 0; setInterval(() => fetch("/bounce?n=" + n++).catch(() => {}), 2);</script></main></body></html>`,
   "widget.thirdparty.test/quote": "<p>THIRD PARTY QUOTE 123.45</p>",
   "evil.test/js": "<p>EVIL JS TARGET</p>",
   "evil.test/popup": "<p>EVIL POPUP</p>",
@@ -293,6 +297,7 @@ export async function startFixtureSite(port = 0) {
       return res.writeHead(200, { "content-type": "text/html" }).end(
         `<html><head><title>Cookie</title></head><body><main><p>Cookie: ${req.headers.cookie || "none"}</p></main></body></html>`);
     }
+    if (key === "ir.issuer.test/bounce") return res.writeHead(302, { location: `https://n${url.searchParams.get("n")}.nowhere.test/` }).end();
     if (key === "ir.issuer.test/redirect-tls") return res.writeHead(302, { location: "https://10.9.9.9/secret" }).end();
     if (key === "ir.issuer.test/redirect-loopback") return res.writeHead(302, { location: "http://127.0.0.1:8081/landing" }).end();
     if (key === "ir.issuer.test/redirect-out") return res.writeHead(302, { location: "http://evil.test/landing" }).end();
