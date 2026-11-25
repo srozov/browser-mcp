@@ -44,7 +44,8 @@ reading a news article"), never by the private project it came from.
      `rejected` line), `browser_eval {code: "process.exit(1)"}` (fails), then `browser_eval {code: "return 1"}`
      (`value` 1), `close`;
      `start {save_dir: <an empty directory under /tmp>}`, `browse open` on a page, `acquire {current_page: true}`,
-     `acquire {url}` of a public PDF (its `pages/0001.txt` and `0001.png` are under `<save_dir>/sources/<id>/`),
+     `acquire {url}` of a public PDF (its `pages/0001.txt`, `0001.png` and `reading/0001.txt` are under
+     `<save_dir>/sources/<id>/`),
      the same `acquire {url}` again ("already acquired"), `browser_eval` clicking a PDF link on a page (its
      `browser.downloads` holds the source_id), `close`; `start {profile: "a"}`, `browse open`, a second
      `start {profile: "a"}` fails naming the first, `close`; then `search` on a query and
