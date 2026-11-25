@@ -306,7 +306,8 @@ page (an HTML report or release) is opened in the browser and saved with its tex
 Returns the source_id and its files under <save_dir>/sources/<source_id>/ (PDF pages as pages/NNNN.txt and NNNN.png,
 with reading/NNNN.txt, the same page's text in reading order: a quote from two-column prose is found there; an
 xlsx's sheets as pages/NNNN.txt, the sheet's number cited as page; a page as original.html, text.txt and page.png),
-its provenance and the publication evidence code found. The same bytes saved again keep their source_id. Cite
+its provenance and the publication evidence code found. Read a source's files at the paths its reply lists in files: a
+PDF saved before reading/ existed has none. The same bytes saved again keep their source_id. Cite
 sources by this source_id. Each call has a ${ACQUIRE_LIMIT_MS / 60_000}-minute limit; one that runs over it fails and the
 browser is not restarted. A link into a site's inline document viewer stands for the document it shows: acquire the
 document's own URL. Publication date: http_last_modified can be the day the file was fetched (newswires); prefer the

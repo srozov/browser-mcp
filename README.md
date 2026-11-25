@@ -99,7 +99,8 @@ Tools:
   opened and saved as `original.html`, `text.txt` and `page.png` (no image above 40,000 px or when it times out). A
   PDF is kept as `original.pdf` with `pages/NNNN.txt` (layout text), `pages/NNNN.png` and `reading/NNNN.txt` (the
   page's text in reading order, which keeps a column's sentences together) per page; an xlsx as `original.xlsx`
-  with one `pages/NNNN.txt` per sheet in workbook order. The reply gives the source_id, the files' paths, the final
+  with one `pages/NNNN.txt` per sheet in workbook order. A PDF saved before `reading/` existed has none, and its reply
+  lists no `files.reading`. The reply gives the source_id, the files' paths, the final
   URL, the parent page and the publication evidence (HTTP `Last-Modified`, the PDF's dates, the link's context).
   Source ids come from the content's hash: the same bytes keep their source_id. `sources/registry.jsonl` gets a
   line per save, with the provenance: requested and final URL, redirects, parent page, link text and context, fetch
