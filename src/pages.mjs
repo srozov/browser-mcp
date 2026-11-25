@@ -1,6 +1,7 @@
-// A saved document's readable pages, prepared by code for the callers: a PDF's page texts and page images and its
-// info, through poppler (pdftotext, pdftoppm, pdfinfo); an xlsx's sheets as page texts. Ported from the page
-// readers' page helper, which was Python calling poppler: the same commands, numbering and sheet rules, from Node.
+// A saved document's readable pages, prepared by code for the callers: a PDF's page texts (layout and reading
+// order), page images and info, through poppler (pdftotext, pdftoppm, pdfinfo); an xlsx's sheets as page texts.
+// Ported from the page readers' page helper, which was Python calling poppler: the same commands, numbering and sheet
+// rules, from Node.
 // Page numbers are 1-based PDF page indices (pages/0001.txt is PDF page 1), never the number printed on the page.
 
 import { execFile } from "node:child_process";
@@ -33,15 +34,24 @@ async function pdfInfo(file) {
   return { title: fields.Title ?? null, pages: Number(fields.Pages), created: fields.CreationDate ?? null, modified: fields.ModDate ?? null };
 }
 
-/** pages/NNNN.txt (layout text) and pages/NNNN.png for every page of a PDF; returns its info. */
-export async function preparePdf(file, dir) {
-  const info = await pdfInfo(file);
-  const texts = (await poppler("pdftotext", ["-layout", "-enc", "UTF-8", file, "-"])).split("\f");
+/** pdftotext's page texts (layout or reading order), one file per page in out; their count must be pdfinfo's. */
+async function writeTexts(file, pages, flags, out) {
+  const texts = (await poppler("pdftotext", [...flags, "-enc", "UTF-8", file, "-"])).split("\f");
   if (texts.at(-1) === "") texts.pop();
-  if (texts.length !== info.pages) throw new Error(`PDF preparation failed: pdftotext gave ${texts.length} pages, pdfinfo ${info.pages}`);
-  const out = join(dir, "pages");
+  if (texts.length !== pages) throw new Error(`PDF preparation failed: pdftotext gave ${texts.length} pages, pdfinfo ${pages}`);
   mkdirSync(out, { recursive: true });
   texts.forEach((text, i) => writeFileSync(join(out, `${page(i + 1)}.txt`), text));
+}
+
+/**
+ * pages/NNNN.txt (layout text), reading/NNNN.txt (reading-order text, a column's sentences kept together) and
+ * pages/NNNN.png for every page of a PDF; returns its info.
+ */
+export async function preparePdf(file, dir) {
+  const info = await pdfInfo(file);
+  const out = join(dir, "pages");
+  await writeTexts(file, info.pages, ["-layout"], out);
+  await writeTexts(file, info.pages, [], join(dir, "reading"));
   let next = 1;
   const worker = async () => {
     for (let n = next++; n <= info.pages; n = next++) {
