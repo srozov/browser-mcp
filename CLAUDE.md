@@ -30,6 +30,8 @@ reading a news article"), never by the private project it came from.
 
 - `scripts/verify` must pass on every branch: it installs from the lock file, checks that every module parses
   and runs the `*.test.mjs` tests (`node --test`). Tests use local fixtures, never live sites.
+- The `verify` check (GitHub Actions, `.github/workflows/verify.yml`) runs `scripts/verify` on every pull request
+  to `master` and every push to it, on the Node 24 it sets up, with the runner's Chrome, Xvfb and poppler.
 - **By hand**, today:
   1. `npm ci`;
   2. start `node src/daemon.mjs` with `BROWSER_PORT`, `BROWSER_BASE_PROFILE` (an empty directory will do),
