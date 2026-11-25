@@ -135,7 +135,8 @@ async function store(b, bytes, meta) {
     if (ext === "pdf") {
       const info = await preparePdf(file, staging);
       return { title: info.title, pages: info.pages, pdf_created: info.created, pdf_modified: info.modified,
-        files: { ...original, pages: `sources/${id}/pages/NNNN.txt and NNNN.png (PDF page index, 4 digits)` } };
+        files: { ...original, pages: `sources/${id}/pages/NNNN.txt and NNNN.png (PDF page index, 4 digits)`,
+          reading: `sources/${id}/reading/NNNN.txt (the same pages' text in reading order, a column's sentences together)` } };
     }
     const info = sheets(file, staging);
     return { pages: info.pages, sheets: info.sheets,
