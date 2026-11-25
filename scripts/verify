@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # The check every branch must pass before review: install, syntax check, tests. Exit 0 = pass.
-# It runs from a fresh worktree and under a service's PATH, so it installs and finds node itself.
+# It runs from a fresh worktree and under a service's PATH, so it installs and finds node itself: a caller's
+# node comes first (CI sets one up), the system's when the caller's PATH has none.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-export PATH="/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+export PATH="${PATH:+$PATH:}/usr/local/bin:/usr/bin:/bin"
 
 npm ci --no-audit --no-fund --loglevel=error
 
@@ -12,5 +13,7 @@ git ls-files -z '*.mjs' '*.js' | xargs -0 -r -n1 node --check
 
 # Tests: *.test.mjs files anywhere, once there are any.
 if git ls-files '*.test.mjs' | grep -q .; then
+  echo "node $(node --version) at $(command -v node); test files:"
+  git ls-files '*.test.mjs' | sed 's/^/  /'
   node --test $(git ls-files '*.test.mjs')
 fi
