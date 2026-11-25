@@ -13,14 +13,18 @@ import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { strToU8, zipSync } from "fflate";
 
-/** A minimal PDF: one page per array of text lines; `info` is its document information (Title, CreationDate, …). */
+/**
+ * A minimal PDF: one page per array of text lines, a line given as an array set in columns side by side; `info` is
+ * its document information (Title, CreationDate, …).
+ */
 export function pdf(pages, info = null) {
   const objs = ["<< /Type /Catalog /Pages 2 0 R >>", null];
   const kids = [];
   for (const lines of pages) {
     const page = objs.length + 1;
     kids.push(`${page} 0 R`);
-    const body = lines.map((l, i) => `BT /F1 10 Tf 30 ${560 - 16 * i} Td (${l.replace(/[()\\]/g, "\\$&")}) Tj ET`).join("\n");
+    const body = lines.flatMap((l, i) => [l].flat().map((t, k) =>
+      `BT /F1 10 Tf ${30 + 280 * k} ${560 - 12 * i} Td (${t.replace(/[()\\]/g, "\\$&")}) Tj ET`)).join("\n");
     objs.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 600] /Contents ${page + 1} 0 R /Resources << /Font << /F1 FONT 0 R >> >> >>`);
     objs.push(`<< /Length ${body.length} >>\nstream\n${body}\nendstream`);
   }
