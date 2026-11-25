@@ -19,7 +19,7 @@ test("local, private and non-http targets are rejected", () => {
   for (const url of ["file:///etc/passwd", "ftp://issuer.example/x", "javascript:alert(1)", "chrome://settings"]) {
     assert.equal(reject(url), "scheme", url);
   }
-  assert.equal(reject("https://user:pw@www.issuer.example/"), "credentials_in_url_THROWAWAY");
+  assert.equal(reject("https://user:pw@www.issuer.example/"), "credentials_in_url");
   assert.equal(reject("not a url"), "invalid_url");
 });
 
