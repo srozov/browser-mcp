@@ -72,10 +72,13 @@ export const screenshotLimit = () => config.screenshotMs;
 /** Offline tests only: a wait before a document's pages are prepared, to see a slow preparation. 0 otherwise. */
 export const prepareDelay = () => config.prepareDelayMs;
 
-/** A refused request, in the browser's own log; `open` reads `lastRefusal` to say what a redirect hop hit. */
+/**
+ * A refused request, in the browser's own log. While `open` navigates, it is also kept in `b.refusals`, where `open`
+ * finds the redirect hop's: Chrome's own connections are refused too, so the latest one is not always the hop's.
+ */
 export function rejected(b, via, url, reason, address) {
   log(b, { type: "rejected", via, url, reason, ...(address ? { address } : {}) });
-  b.lastRefusal = { via, url, reason, address, at: Date.now() };
+  b.refusals?.push({ via, url, reason, address });
 }
 
 /** The request guard: the early refusal for a page's requests, with how each was made. Redirect hops and sockets are the proxy's. */
@@ -90,7 +93,7 @@ function guard(b) {
       // A request without a frame (a worker, or a popup's first navigation) is logged by its resource type.
       if (req.isNavigationRequest()) via = "navigation";
     }
-    // What a tab left on Chrome's error page was refused; lastRefusal also holds Chrome's own connections.
+    // What a tab left on Chrome's error page was refused; `refusals` also holds Chrome's own connections.
     if (via === "navigation") b.refusedNavigation = { url: req.url(), reason: refusal.reason };
     rejected(b, via, req.url(), refusal.reason, refusal.address);
     return route.abort("blockedbyclient").catch(closed);
@@ -132,7 +135,7 @@ export function start({ profile: name, saveDir = null } = {}) {
   const handle = randomBytes(12).toString("base64url");
   const profile = named ?? join(config.profiles, handle);
   if (!named) cpSync(config.baseProfile, profile, { recursive: true, filter: (src) => !/^Singleton/.test(src.split("/").pop()) });
-  const b = { handle, profile, named: named ? name : null, saveDir, downloads: [], downloadsPath: join(config.downloads, handle), log: join(config.logs, `${handle}.jsonl`), xvfb: null, proxy: null, lastRefusal: null, context: null, starting: null,
+  const b = { handle, profile, named: named ? name : null, saveDir, downloads: [], downloadsPath: join(config.downloads, handle), log: join(config.logs, `${handle}.jsonl`), xvfb: null, proxy: null, refusals: null, context: null, starting: null,
     retiring: Promise.resolve(), tabs: new Map(), current: null, front: null, tabCount: 0, lastGood: new WeakMap(), opened: [], documents: new WeakMap(), refusedNavigation: null,
     endpoint: null, pid: null, cdp: null, console: null, links: new WeakMap(), linkCapture: new WeakMap(),
     queue: Promise.resolve(), lastUsed: Date.now(), busy: 0, closed: false };

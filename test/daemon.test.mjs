@@ -248,6 +248,20 @@ test("a redirect to a public host is followed; to a private or loopback host the
   await call(c, "close", { browser: b });
 });
 
+test("a refused https hop is named even when other connections are refused while the navigation fails", () => withBrowser(async (c, b) => {
+  // The noisy page keeps making connections the proxy refuses until the navigation away from it fails.
+  assert.equal((await browse(c, b, { action: "open", url: `${ISSUER}/noisy` })).error, false);
+  const tls = await browse(c, b, { action: "open", url: `${ISSUER}/redirect-tls` });
+  assert.equal(tls.error, true);
+  assert.equal(JSON.parse(tls.text).error, "10.9.9.9:443 is blocked (private_host); the tab is back on http://ir.issuer.test/noisy");
+  const log = events(main.stateDir, b);
+  const hop = log.findIndex((e) => e.type === "rejected" && e.via === "connection" && e.url === "10.9.9.9:443" && e.reason === "private_host");
+  assert.ok(hop >= 0, "the hop's refusal is logged");
+  assert.ok(log.slice(hop + 1).some((e) => e.type === "rejected" && e.via === "connection" && /\.nowhere\.test:443$/.test(e.url) && e.reason === "unresolved"),
+    "another connection was refused after the hop's");
+  assert.deepEqual(leaked(["10.9.9.9"]), []);
+}));
+
 test("a WebSocket to a public host works; to a private host or a name resolving private it is refused", async () => {
   const c = await client(main.url);
   const b = await start(c);

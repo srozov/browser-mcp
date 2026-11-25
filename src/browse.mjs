@@ -131,26 +131,42 @@ export async function open(b, url) {
     throw new Error(blockedText(url, refusal));
   }
   const p = await page(b);
-  const started = Date.now();
   const earlier = b.downloads.length; // an earlier click's late download is the call's to report, not this URL's
   // Chrome's PDF viewer never reaches domcontentloaded: a document is recognised by its response headers.
   const document = p.waitForResponse((r) => r.request().isNavigationRequest() && r.frame() === p.mainFrame() &&
     isDocumentType(r.headers()["content-type"]), { timeout: NAV_TIMEOUT_MS }).catch(() => null);
   let download = false;
   let blocked = null;
-  const response = await Promise.race([document, p.goto(url, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS }).catch((e) => {
-    if (String(e).includes("Download is starting")) {
-      download = true;
-      return null;
-    }
-    // An https hop the proxy refused fails the navigation as a tunnel failure: say what it refused.
-    const refused = b.lastRefusal;
-    if (String(e).includes("ERR_TUNNEL_CONNECTION_FAILED") && refused?.via === "connection" && refused.at >= started) {
-      blocked = blockedText(refused.url, refused);
-      return null;
-    }
-    throw e;
-  })]);
+  // Each redirect hop is a request of its own: the navigation's last one is the hop that failed.
+  let hop = url;
+  const onRequest = (req) => {
+    if (req.isNavigationRequest() && req.frame() === p.mainFrame()) hop = req.url();
+  };
+  p.on("request", onRequest);
+  const refusals = b.refusals = [];
+  let response;
+  try {
+    response = await Promise.race([document, p.goto(url, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS }).catch((e) => {
+      if (String(e).includes("Download is starting")) {
+        download = true;
+        return null;
+      }
+      // An https hop the proxy refused fails the navigation as a tunnel failure: say what it refused, by the hop's
+      // host:port (the proxy's CONNECT authority), not by the latest refusal, which may be Chrome's own connection.
+      if (String(e).includes("ERR_TUNNEL_CONNECTION_FAILED")) {
+        const { hostname, port } = new URL(hop);
+        const refused = refusals.findLast((r) => r.via === "connection" && r.url === `${hostname}:${port || 443}`);
+        if (refused) {
+          blocked = blockedText(refused.url, refused);
+          return null;
+        }
+      }
+      throw e;
+    })]);
+  } finally {
+    p.off("request", onRequest);
+    b.refusals = null;
+  }
   // A plain-http hop the proxy refused is its 403, marked with the reason.
   const policy = response?.headers()["x-source-policy"];
   if (policy) blocked = `${response.url()} is blocked (${policy})`;
