@@ -34,9 +34,9 @@ async function pdfInfo(file) {
   return { title: fields.Title ?? null, pages: Number(fields.Pages), created: fields.CreationDate ?? null, modified: fields.ModDate ?? null };
 }
 
-/** pdftotext's page texts (layout or reading order), one file per page in out; their count must be pdfinfo's. */
-async function writeTexts(file, pages, flags, out) {
-  const texts = (await poppler("pdftotext", [...flags, "-enc", "UTF-8", file, "-"])).split("\f");
+/** pdftotext's output (layout or reading order), one file per page in out; its page count must be pdfinfo's. */
+function writeTexts(output, pages, out) {
+  const texts = output.split("\f");
   if (texts.at(-1) === "") texts.pop();
   if (texts.length !== pages) throw new Error(`PDF preparation failed: pdftotext gave ${texts.length} pages, pdfinfo ${pages}`);
   mkdirSync(out, { recursive: true });
@@ -50,8 +50,11 @@ async function writeTexts(file, pages, flags, out) {
 export async function preparePdf(file, dir) {
   const info = await pdfInfo(file);
   const out = join(dir, "pages");
-  await writeTexts(file, info.pages, ["-layout"], out);
-  await writeTexts(file, info.pages, [], join(dir, "reading"));
+  // The two passes run together; their files are written only once both have finished.
+  const [layout, reading] = await Promise.all([["-layout"], []].map((flags) =>
+    poppler("pdftotext", [...flags, "-enc", "UTF-8", file, "-"])));
+  writeTexts(layout, info.pages, out);
+  writeTexts(reading, info.pages, join(dir, "reading"));
   let next = 1;
   const worker = async () => {
     for (let n = next++; n <= info.pages; n = next++) {
