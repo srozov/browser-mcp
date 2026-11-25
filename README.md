@@ -100,13 +100,13 @@ Tools:
   PDF is kept as `original.pdf` with `pages/NNNN.txt` (layout text), `pages/NNNN.png` and `reading/NNNN.txt` (the
   page's text in reading order, which keeps a column's sentences together) per page; an xlsx as `original.xlsx`
   with one `pages/NNNN.txt` per sheet in workbook order. A PDF saved before `reading/` existed has none, and its reply
-  lists no `files.reading`. The reply gives the source_id, the files' paths, the final
-  URL, the parent page and the publication evidence (HTTP `Last-Modified`, the PDF's dates, the link's context).
-  Source ids come from the content's hash: the same bytes keep their source_id. `sources/registry.jsonl` gets a
-  line per save, with the provenance: requested and final URL, redirects, parent page, link text and context, fetch
-  time and hash. Several browsers can share a `save_dir`: each save is prepared in a staging directory of its own
-  under `sources/.staging/`, then moved into place and registered one at a time. 6-minute limit; a call over it
-  fails without restarting the browser.
+  lists no `files.reading`. The reply gives the source_id, the files' paths, the final URL, the parent page and the
+  publication evidence (HTTP `Last-Modified`, the PDF's dates, the link's context). Source ids come from the
+  content's hash: the same bytes keep their source_id. `sources/registry.jsonl` gets a line per save, with the
+  provenance: requested and final URL, redirects, parent page, link text and context, fetch time and hash. Several
+  browsers can share a `save_dir`: each save is prepared in a staging directory of its own under
+  `sources/.staging/`, then moved into place and registered one at a time. 6-minute limit; a call over it fails
+  without restarting the browser.
 - `browser_eval {browser, code}`: the code console. `code` (at most 32,000 characters) is the body of an async
   function with `page` (the browser's current tab), `context` and `snapshot(page?)` (the outline `observe` shows,
   refused for a page off the source policy) in scope. It runs in a child process of the daemon per browser, which
